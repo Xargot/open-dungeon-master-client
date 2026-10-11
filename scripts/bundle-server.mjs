@@ -72,15 +72,19 @@ console.log(`Building server ${serverPkg.version} (${commit}) in ${buildDir}`);
 run("git", ["-C", serverDir, "worktree", "add", "--detach", buildDir, "HEAD"]);
 
 try {
-  run("cp", [
-    "-a",
-    "--reflink=auto",
-    path.join(serverDir, "node_modules"),
-    path.join(buildDir, "node_modules"),
-  ]);
+  // Keep the source checkout's live .next untouched, while allowing a local
+  // development build to include tracked, uncommitted fixes. Release builds
+  // use a clean checkout, so this is a no-op there.
+  const sourceDiff = execFileSync("git", ["-C", serverDir, "diff", "--binary", "HEAD"]);
+  if (sourceDiff.length) {
+    execFileSync("git", ["-C", buildDir, "apply", "--binary", "-"], { input: sourceDiff });
+  }
+  fs.cpSync(path.join(serverDir, "node_modules"), path.join(buildDir, "node_modules"), {
+    recursive: true,
+  });
   // The postinstall step copies dice assets into public/, which git ignores.
   run(process.execPath, ["scripts/copy-dice-assets.mjs"], { cwd: buildDir });
-  run(path.join(buildDir, "node_modules", ".bin", "next"), ["build"], {
+  run(process.execPath, [path.join(buildDir, "node_modules", "next", "dist", "bin", "next"), "build"], {
     cwd: buildDir,
     env: { ...process.env, DOCKER_BUILD: "1" },
   });
@@ -92,6 +96,19 @@ try {
     recursive: true,
   });
   fs.cpSync(path.join(buildDir, "public"), path.join(vendorDir, "public"), { recursive: true });
+  // Next's standalone tracer includes sharp's native addon, but can omit the
+  // adjacent platform runtime libraries that the addon loads dynamically
+  // (libvips on Windows). Merge the installed platform package so the
+  // packaged server can load sharp for Whisper model installation.
+  const sharpPlatform = `sharp-${process.platform}-${process.arch}`;
+  const sharpPlatformSource = path.join(buildDir, "node_modules", "@img", sharpPlatform);
+  if (fs.existsSync(sharpPlatformSource)) {
+    fs.cpSync(
+      sharpPlatformSource,
+      path.join(vendorDir, "node_modules", "@img", sharpPlatform),
+      { recursive: true },
+    );
+  }
   const bindings = addEmbeddingBindings(vendorDir, path.join(buildDir, "node_modules"));
   console.log(`Embedding runtime bindings added for ${bindings.join(", ") || "no other target"}`);
 
@@ -153,10 +170,18 @@ run(process.execPath, ["scripts/alias-server-modules.mjs"], { cwd: repo });
 
 console.log(`Rebuilding native modules for Electron ${electronPkg.version}`);
 run(
-  path.join(repo, "node_modules", ".bin", "electron-rebuild"),
-  ["--version", electronPkg.version, "--module-dir", vendorDir, "--force", "--only", "better-sqlite3-multiple-ciphers"],
+  process.execPath,
+  [
+    path.join(repo, "node_modules", "@electron", "rebuild", "lib", "cli.js"),
+    "--version",
+    electronPkg.version,
+    "--module-dir",
+    vendorDir,
+    "--force",
+    "--only",
+    "better-sqlite3-multiple-ciphers",
+  ],
   { cwd: repo },
 );
 
-const size = execFileSync("du", ["-sh", vendorDir], { encoding: "utf8" }).split("\t")[0];
-console.log(`Payload staged at vendor/server (${size})`);
+console.log(`Payload staged at vendor/server`);
