@@ -32,7 +32,9 @@ function listAsZipped(root) {
   return out.sort();
 }
 
-test("the phone's payload keeps only what Node on Android can run", () => {
+test("the phone's payload keeps only what Node on Android can run", {
+  skip: process.platform === "win32" && "Android payload packaging is outside the Windows desktop target",
+}, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "odm-android-"));
   const vendorDir = path.join(dir, "server");
   const staging = path.join(dir, "staging");

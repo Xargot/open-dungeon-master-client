@@ -41,20 +41,25 @@ test("the torch index follows the GPU vendor", () => {
   assert.equal(torchIndexUrl(mac), null);
 });
 
-test("install commands pin the tag and route pip through the venv", () => {
+test("install commands pin the tag and route pip through the venv", {
+  skip: process.platform === "win32" && "Checks Unix-style installation paths outside the Windows target",
+}, () => {
+  const portable = (value) => value.replaceAll("\\", "/");
   const commands = installCommands("/root", "python3", nvidiaPc);
   assert.equal(commands.length, 4);
   const [clone, venv, torch, reqs] = commands;
   assert.equal(clone.bin, "git");
   assert.ok(clone.args.includes(COMFY_TAG));
   assert.ok(clone.args.includes("--depth"));
-  assert.ok(clone.args.some((arg) => arg.endsWith("/ComfyUI")));
+  assert.ok(clone.args.some((arg) => portable(arg).endsWith("/ComfyUI")));
   assert.equal(venv.bin, "python3");
-  assert.deepEqual(venv.args, ["-m", "venv", "/root/venv"]);
-  assert.equal(torch.bin, "/root/venv/bin/python");
+  assert.equal(venv.args[0], "-m");
+  assert.equal(venv.args[1], "venv");
+  assert.equal(portable(venv.args[2]), "/root/venv");
+  assert.equal(portable(torch.bin), "/root/venv/bin/python");
   assert.ok(torch.args.join(" ").includes("--index-url https://download.pytorch.org/whl/cu124"));
-  assert.equal(reqs.bin, "/root/venv/bin/python");
-  assert.ok(reqs.args.join(" ").endsWith("/root/ComfyUI/requirements.txt"));
+  assert.equal(portable(reqs.bin), "/root/venv/bin/python");
+  assert.ok(portable(reqs.args.join(" ")).endsWith("/root/ComfyUI/requirements.txt"));
 });
 
 test("mac installs default torch wheels with no extra index", () => {
@@ -64,9 +69,9 @@ test("mac installs default torch wheels with no extra index", () => {
 });
 
 test("windows uses the Scripts venv layout", () => {
-  assert.ok(venvPython("C:\\r", "win32").endsWith("python.exe"));
-  assert.ok(venvPython("C:\\r", "win32").includes("Scripts"));
-  assert.equal(venvPython("/r", "linux"), "/r/venv/bin/python");
+  const portable = (value) => value.replaceAll("\\", "/");
+  assert.equal(portable(venvPython("C:\\r", "win32")), "C:/r/venv/Scripts/python.exe");
+  assert.equal(portable(venvPython("/r", "linux")), "/r/venv/bin/python");
 });
 
 test("the curated checkpoint is a pinned ungated SDXL file", () => {

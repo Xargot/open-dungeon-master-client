@@ -170,7 +170,7 @@ test("the art the shell carries leaves the payload, and only that", () => {
       for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
         const full = path.join(d, entry.name);
         if (entry.isDirectory()) walkDir(full);
-        else left.push(path.relative(dir, full));
+        else left.push(path.relative(dir, full).split(path.sep).join("/"));
       }
     };
     walkDir(dir);

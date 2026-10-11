@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import path from "node:path";
 import test from "node:test";
 import { encodeQr, qrSvg } from "../dist/shared/qr.js";
 
 // The server repo carries the qrcode npm package; when the sibling checkout
 // is present the encoder is checked against it module for module, with the
 // mask forced on both sides so only the encoding itself is under test.
-const REFERENCE = "/home/lebbi/open-dungeon-master/node_modules/qrcode";
-const reference = existsSync(`${REFERENCE}/package.json`)
+const serverDir = process.env.ODM_SERVER_DIR ?? "/home/lebbi/open-dungeon-master";
+const REFERENCE = path.join(serverDir, "node_modules", "qrcode");
+const reference = existsSync(path.join(REFERENCE, "package.json"))
   ? createRequire(import.meta.url)(REFERENCE)
   : null;
 

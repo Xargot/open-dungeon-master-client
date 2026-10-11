@@ -408,7 +408,9 @@ function adminScript(args) {
   return match[1].replace(/\\(["\\])/g, "$1");
 }
 
-test("a Mac install the account cannot write moves the bundle behind the password prompt", async () => {
+test("a Mac install the account cannot write moves the bundle behind the password prompt", {
+  skip: process.platform === "win32" && "Runs a POSIX shell command that Windows cannot execute",
+}, async () => {
   const { Updater } = await import("../dist/main/updater.js");
   const fsp = await import("node:fs/promises");
   const path = await import("node:path");
@@ -455,7 +457,9 @@ test("a Mac install the account cannot write moves the bundle behind the passwor
   await fsp.rm(folder, { recursive: true, force: true });
 });
 
-test("a Mac copy run from where Gatekeeper put it is installed into Applications", async () => {
+test("a Mac copy run from where Gatekeeper put it is installed into Applications", {
+  skip: process.platform === "win32" && "Uses macOS absolute paths and bundle locations",
+}, async () => {
   const { Updater } = await import("../dist/main/updater.js");
   const fsp = await import("node:fs/promises");
   const folder = await tempFolder();
@@ -589,7 +593,9 @@ test("a failed flatpak install says why and keeps the bundle", async () => {
   await fsp.rm(folder, { recursive: true, force: true });
 });
 
-test("the flatpak relaunch waits for the old sandbox, then runs the app", async () => {
+test("the flatpak relaunch waits for the old sandbox, then runs the app", {
+  skip: process.platform === "win32" && "Runs a POSIX shell command that Windows cannot execute",
+}, async () => {
   // The host half of the command, run for real against a stand-in flatpak
   // that reports the instance twice before it is gone.
   const { flatpakRelaunchCommand } = await import("../dist/main/updater.js");
@@ -636,7 +642,9 @@ test("the flatpak relaunch waits for the old sandbox, then runs the app", async 
   await fsp.rm(folder, { recursive: true, force: true });
 });
 
-test("replaceAppImage keeps a renamed file's name and replaces a versioned one", async () => {
+test("replaceAppImage keeps a renamed file's name and replaces a versioned one", {
+  skip: process.platform === "win32" && "AppImage updates are Linux-specific",
+}, async () => {
   const { replaceAppImage } = await import("../dist/main/updater.js");
   const fsp = await import("node:fs/promises");
   const path = await import("node:path");
