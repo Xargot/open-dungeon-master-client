@@ -17,7 +17,7 @@ import { renderHome } from "./home.js";
 import { aiProgress } from "./local-ai.js";
 import { renderAdd, renderAuth } from "./servers.js";
 import { gameBack, isGameShowing, preloadGame, tryOpenNative } from "./game-screen.js";
-import { renderSettings } from "./settings.js";
+import { renderSettings, worldTransferPhase } from "./settings.js";
 import { refresh, refreshFeed, state, tunnelWatchers } from "./state.js";
 import { endTour, isTourActive, maybeStartAppTour } from "./tour.js";
 
@@ -69,6 +69,8 @@ window.odm.onEvent((event) => {
     state.tunnel = event.status;
     for (const watcher of tunnelWatchers) watcher();
     rerenderLive();
+  } else if (event.kind === "world-transfer") {
+    worldTransferPhase(event.phase);
   } else if (event.kind === "home-feed") {
     state.feed = event.feed;
     rerenderHome();

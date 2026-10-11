@@ -30,14 +30,17 @@ export function localFolder(hostDir: string): string {
 export function createLocalAssetIndex(manifest: LocalAssetManifest): LocalAssetIndex {
   const dirs = new Map<string, Set<string>>();
   for (const [dir, files] of Object.entries(manifest)) dirs.set(dir, new Set(files));
+  const iconsListed = [...dirs.keys()].some((dir) => dir.startsWith(ICONS));
   return {
     localPath(hostPath) {
       if (!hostPath.startsWith("/") || hostPath.startsWith("//")) return null;
       const clean = hostPath.split(/[?#]/, 1)[0] ?? hostPath;
-      // The icons always resolve locally, manifest or not, as they did before
-      // the rest of the art shipped: the shell's Settings screen draws them
-      // with no host connected, where a fallback has nowhere to go.
-      if (clean.startsWith(ICONS)) return localFolder(ICONS) + clean.slice(ICONS.length);
+      // A build whose manifest lists no icons (one from before the rest of
+      // the art shipped) resolves every icon locally, as it always did. Once
+      // the manifest lists them, an icon a newer host has and this app does
+      // not goes to the host like any other unlisted file, instead of
+      // pointing at a file the app does not carry.
+      if (clean.startsWith(ICONS) && !iconsListed) return localFolder(ICONS) + clean.slice(ICONS.length);
       const cut = clean.lastIndexOf("/") + 1;
       const files = dirs.get(clean.slice(0, cut));
       const file = clean.slice(cut);

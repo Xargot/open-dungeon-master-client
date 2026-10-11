@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { localFolder, type LocalAssetManifest } from "../shared/local-assets";
+import { MARKER, PayloadStore } from "./payload-store";
 
 // The desktop payload is staged (scripts/stage-desktop-payload.mjs) in a
 // shape electron-builder will package whole, and this puts it back into the
@@ -26,12 +27,19 @@ export type ModuleAliases = Record<string, string>;
 // Copies `payloadDir` into `runDir` and restores it into a runnable server
 // tree. `rendererDir` is where the shell's own bundle lives (dist/renderer,
 // inside app.asar when packaged); when it has no manifest the payload is
-// taken as complete.
-export function materializeRunTree(payloadDir: string, runDir: string, rendererDir: string): void {
-  fs.cpSync(payloadDir, runDir, { recursive: true });
+// taken as complete. Asynchronous, so the copy (the server, its modules and
+// the art) never holds Electron's main process; and the payload's marker
+// (odm-payload.json) is written last, so a tree is only ever taken for a
+// finished one once everything else is in it (payload-store.ts).
+export async function materializeRunTree(payloadDir: string, runDir: string, rendererDir: string): Promise<void> {
+  const marker = path.join(payloadDir, MARKER);
+  await fs.promises.cp(payloadDir, runDir, { recursive: true, filter: (source) => source !== marker });
   restoreModuleDirs(runDir);
   linkModuleAliases(runDir);
-  restoreLocalAssets(runDir, rendererDir);
+  await restoreLocalAssets(runDir, rendererDir);
+  if (fs.existsSync(marker)) {
+    await PayloadStore.writeMarker(runDir, await fs.promises.readFile(marker));
+  }
 }
 
 // Renames every MODULES_DIR back to node_modules, deepest first so a
@@ -68,22 +76,22 @@ export function linkModuleAliases(root: string): number {
   return made;
 }
 
-// Reads files one at a time rather than fs.cpSync: the source sits inside
-// app.asar when packaged, which Electron's fs only patches for the plain
-// read calls.
-export function restoreLocalAssets(runDir: string, rendererDir: string): number {
+// Reads files one at a time rather than with a recursive copy: the source
+// sits inside app.asar when packaged, which Electron's fs only patches for
+// the plain read calls (readFile, sync or promised).
+export async function restoreLocalAssets(runDir: string, rendererDir: string): Promise<number> {
   const manifestFile = path.join(rendererDir, "game", "public", "manifest.json");
   if (!fs.existsSync(manifestFile)) return 0;
-  const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8")) as LocalAssetManifest;
+  const manifest = JSON.parse(await fs.promises.readFile(manifestFile, "utf8")) as LocalAssetManifest;
   let copied = 0;
   for (const [hostDir, files] of Object.entries(manifest)) {
     const from = path.join(rendererDir, localFolder(hostDir));
     const to = path.join(runDir, "public", ...hostDir.split("/").filter(Boolean));
-    fs.mkdirSync(to, { recursive: true });
+    await fs.promises.mkdir(to, { recursive: true });
     for (const file of files) {
       const source = path.join(from, file);
       if (!fs.existsSync(source)) continue;
-      fs.writeFileSync(path.join(to, file), fs.readFileSync(source));
+      await fs.promises.writeFile(path.join(to, file), await fs.promises.readFile(source));
       copied += 1;
     }
   }

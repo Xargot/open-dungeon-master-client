@@ -15,9 +15,16 @@ import { ShellWindow } from "./window";
 
 // Session tokens go through the OS keychain when one is available. The
 // "plain:" fallback (headless Linux without a keyring) is marked so tokens
-// encrypted one way are never misread the other.
+// encrypted one way are never misread the other. On Linux with no keyring,
+// safeStorage still "encrypts", with a fixed key (its basic_text backend),
+// which protects nothing; Settings says so rather than claim a keyring.
 function makeCrypt(): TokenCrypt {
   return {
+    protection() {
+      if (!safeStorage.isEncryptionAvailable()) return "none";
+      if (process.platform === "linux" && safeStorage.getSelectedStorageBackend() === "basic_text") return "obscured";
+      return "keyring";
+    },
     encrypt(plain: string): string {
       if (safeStorage.isEncryptionAvailable()) {
         return safeStorage.encryptString(plain).toString("base64");

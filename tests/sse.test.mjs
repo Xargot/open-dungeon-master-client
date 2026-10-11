@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createSseParser, streamRequestHeaders } from "../dist/shared/sse.js";
+import { SseOverflowError, createSseParser, streamRequestHeaders } from "../dist/shared/sse.js";
 
 function collect() {
   const events = [];
@@ -64,4 +64,21 @@ test("a reconnect carries the last event id and the first connect carries none",
   const lastId = events.at(-1)?.id ?? "";
   assert.equal(lastId, "41");
   assert.deepEqual(streamRequestHeaders(lastId), { accept: "text/event-stream", "last-event-id": "41" });
+});
+
+// Audit C2: a long-lived stream is unbounded in total, but no one event or
+// unfinished line may grow without end.
+test("a line or an event past the ceiling is refused; ordinary traffic is not", () => {
+  const events = [];
+  const parser = createSseParser((event) => events.push(event), 64);
+  parser.feed(`data: ${"x".repeat(40)}\n\n`);
+  assert.equal(events.length, 1);
+  assert.throws(() => parser.feed("data: " + "y".repeat(100)), SseOverflowError);
+  const lines = createSseParser(() => undefined, 64);
+  assert.throws(() => {
+    for (let index = 0; index < 4; index += 1) lines.feed(`data: ${"z".repeat(20)}\n`);
+  }, SseOverflowError);
+  // Many small events through one parser never trip it.
+  const steady = createSseParser(() => undefined, 64);
+  for (let index = 0; index < 1000; index += 1) steady.feed(`event: ping\ndata: {}\n\n`);
 });

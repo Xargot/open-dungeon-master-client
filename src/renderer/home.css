@@ -1400,6 +1400,8 @@ html[data-theme="light"] .tt-page > .topbar.tt-header .wordmark { color: var(--t
 .memory-line p { margin: 0; }
 .memory-line > * + * { margin-top: 0.6rem; }
 .memory-working { display: flex; align-items: center; gap: 0.5rem; }
+/* Move your world: the import question's two answers, side by side. */
+.transfer-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
 @media (prefers-reduced-motion: reduce) {
   .memory-line { animation: none; }
 }

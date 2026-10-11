@@ -66,7 +66,32 @@ export function pruneServerPayload(dir) {
   if (providers) dropped.push(`onnxruntime GPU providers (${providers})`);
   const dead = pruneDeadFiles(dir);
   if (dead) dropped.push(`source maps, type declarations, TypeScript sources, readmes and test folders (${dead})`);
+  const tracks = pruneAmbienceLibrary(dir);
+  if (tracks) dropped.push(`public/ambience (${tracks} tracks; the admin panel installs the sound pack)`);
   return dropped.sort();
+}
+
+// The sound library (public/ambience): some ninety open-licensed recordings
+// the server repo ships for the tables it hosts, 145 MB that compress not
+// at all. Inside the apps it tripled the APK and every desktop installer,
+// so the payload leaves it out and the server offers it as a download
+// instead: the same release publishes the folder as ambience-pack.zip, the
+// Sound panel and the admin panel install it with one tap, and both shells
+// keep the folder across payload upgrades (PRESERVED in
+// src/main/local-server.ts and PayloadStore.java), so it is fetched once.
+// Returns how many audio files went; the manifest goes with them, since the
+// server rebuilds it from the folder.
+const AUDIO_FILE = /\.(mp3|ogg|opus|m4a|wav)$/i;
+
+export function pruneAmbienceLibrary(dir) {
+  const folder = path.join(dir, "public", "ambience");
+  if (!fs.existsSync(folder)) return 0;
+  let count = 0;
+  for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+    if (entry.isFile() && AUDIO_FILE.test(entry.name)) count += 1;
+  }
+  fs.rmSync(folder, { recursive: true, force: true });
+  return count;
 }
 
 // Files no running server opens, found under node_modules and the build

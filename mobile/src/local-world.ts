@@ -8,6 +8,14 @@ import type {
   ShellEvent,
 } from "../../src/shared/types";
 import { NO_SAVED_AI, openAiPatch, savedAiFrom } from "../../src/shared/ai-setup";
+import {
+  commitWorldImport,
+  discardWorldTransfer,
+  exportFileName,
+  runWorldJob,
+  type WorldPreview,
+  type WorldRequest,
+} from "../../src/shared/world-transfer";
 
 // The device-hosted world: the same server the desktop app bundles, run by a
 // Node runtime inside this app (see android/.../WorldRuntime.java) and
@@ -45,6 +53,11 @@ export interface LocalWorldPlugin {
   start(): Promise<WorldStatus>;
   stop(): Promise<WorldStatus>;
   log(): Promise<{ text: string }>;
+  // Moving the world (LocalWorldPlugin.java): copy a picked archive beside
+  // the world's database ({ name: "" } when the picker is closed), or copy a
+  // packed one to where the person chooses.
+  pickArchive?(): Promise<{ name: string }>;
+  saveArchive?(options: { name: string; suggested: string }): Promise<{ saved: boolean; label?: string }>;
   // Capacitor's event channel; optional so a fake plugin need not have one.
   addListener?(
     eventName: "worldEvent",
@@ -84,6 +97,11 @@ export interface TokenGrant {
 
 export interface LocalWorldDeps {
   plugin: LocalWorldPlugin;
+  // A JSON round trip that reports bad statuses instead of throwing.
+  fetchJson?(
+    url: string,
+    init: { method?: string; headers?: Record<string, string>; body?: unknown; timeoutMs?: number },
+  ): Promise<{ status: number; data: unknown }>;
   loadProfile(): Promise<LocalProfile | null>;
   saveProfile(profile: LocalProfile | null): Promise<void>;
   loginForToken(origin: string, username: string, password: string): Promise<TokenGrant>;
@@ -96,6 +114,10 @@ export interface LocalWorldDeps {
   getAdminSettings(origin: string, token: string): Promise<unknown>;
   // Plants the session and opens the world's pages in the game webview.
   open(origin: string, token: string, joinCode: string, path: string): Promise<void>;
+  // Plants the session alone. The bridge's own requests share the webview's
+  // cookies and the server reads the cookie before a bearer token, so after
+  // an import the replaced world's cookie would sign every one of them out.
+  plantSession?(origin: string, token: string): Promise<void>;
   emit(event: ShellEvent): void;
   randomSecret(): string;
   // The public address while the world is shared through a tunnel, "" when
@@ -345,5 +367,121 @@ export function createLocalWorld(deps: LocalWorldDeps) {
       .catch(() => undefined);
   }
 
-  return { status, start, play, createAccount, login, configureAi, aiSaved, stop, publish, watch };
+  // Moving the world (src/shared/world-transfer.ts), the way the desktop
+  // shell does it (src/main/ipc.ts local:export-world and its neighbours).
+  // A world nobody has entered yet gets its owner profile first, so a new
+  // phone can take in a world straight away; the import replaces it anyway.
+  async function ownerSession(): Promise<{ origin: string; request: WorldRequest }> {
+    const fetchJson = deps.fetchJson;
+    if (!fetchJson) throw new Error("This build cannot move worlds.");
+    const fresh = (await deps.plugin.status()).firstRun;
+    const origin = await start();
+    let profile = await liveToken(origin);
+    if (!profile && (fresh || !(await deps.loadProfile()))) {
+      const made = await createAccount({ username: "player", password: "" });
+      if (!made.ok) throw new Error(made.error);
+      profile = await liveToken(origin);
+    }
+    if (!profile) throw new Error("Sign in to your world first, then try again.");
+    const token = profile.token;
+    // A cookie left from another session would win over the bearer token.
+    await deps.plantSession?.(origin, token);
+    return {
+      origin,
+      request: (method, body) =>
+        fetchJson(`${origin}/api/admin/world`, { method, headers: { authorization: `Bearer ${token}` }, body, timeoutMs: 30_000 }),
+    };
+  }
+
+  const phase = (text: string) => deps.emit({ kind: "world-transfer", phase: text });
+  // The checked archive waiting for the person's yes.
+  let pendingImport = "";
+
+  async function exportWorld(): Promise<Result<{ saved: boolean; file: string; bytes: number }>> {
+    try {
+      const save = deps.plugin.saveArchive;
+      if (!save) throw new Error("This build cannot move worlds.");
+      const { request } = await ownerSession();
+      const job = await runWorldJob(request, { action: "export" }, phase);
+      if (!job.export) throw new Error("The world was packed, but the file is missing.");
+      phase("Saving");
+      const saved = await save({ name: job.export.name, suggested: exportFileName(job.export) }).finally(() =>
+        discardWorldTransfer(request),
+      );
+      return { ok: true, saved: saved.saved, file: saved.label ?? "", bytes: saved.saved ? job.export.bytes : 0 };
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
+  async function importPick(): Promise<Result<{ preview: WorldPreview | null }>> {
+    try {
+      const pick = deps.plugin.pickArchive;
+      if (!pick) throw new Error("This build cannot move worlds.");
+      const { request } = await ownerSession();
+      await discardWorldTransfer(request);
+      pendingImport = "";
+      const picked = await pick();
+      if (!picked.name) return { ok: true, preview: null };
+      try {
+        const job = await runWorldJob(request, { action: "check", name: picked.name }, phase);
+        pendingImport = picked.name;
+        return { ok: true, preview: job.preview };
+      } catch (err) {
+        await discardWorldTransfer(request);
+        throw err;
+      }
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
+  async function importCommit(): Promise<Result<{ owner: string }>> {
+    try {
+      if (!pendingImport) throw new Error("Pick a world file first.");
+      const { request } = await ownerSession();
+      const secret = deps.randomSecret();
+      phase("Swapping your world in");
+      const { owner } = await commitWorldImport(request, pendingImport, secret);
+      pendingImport = "";
+      phase("Restarting your world");
+      await deps.plugin.stop();
+      const origin = await start();
+      const profile = await adopt(await deps.loginForToken(origin, owner, secret), secret);
+      await deps.plantSession?.(origin, profile.token);
+      await announce();
+      return { ok: true, owner };
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
+  async function importCancel(): Promise<void> {
+    pendingImport = "";
+    const world = await deps.plugin.status().catch(() => null);
+    const profile = await deps.loadProfile();
+    if (world?.state === "running" && world.origin && profile?.token && deps.fetchJson) {
+      const fetchJson = deps.fetchJson;
+      await discardWorldTransfer((method, body) =>
+        fetchJson(`${world.origin}/api/admin/world`, { method, headers: { authorization: `Bearer ${profile.token}` }, body }),
+      );
+    }
+  }
+
+  return {
+    status,
+    start,
+    play,
+    createAccount,
+    login,
+    configureAi,
+    aiSaved,
+    stop,
+    publish,
+    watch,
+    exportWorld,
+    importPick,
+    importCommit,
+    importCancel,
+  };
 }

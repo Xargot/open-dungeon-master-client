@@ -2,12 +2,13 @@
 // forgetting, plus the error screen every flow falls back to. The
 // behaviour here is unchanged from the single-file shell; only the frame
 // around it moved.
-import { CODE_SHAPE, parseRoomCode } from "../shared/deep-link.js";
+import { CODE_SHAPE, insecureRemoteOrigin, parseRoomCode } from "../shared/deep-link.js";
 import { joinFormShape } from "../shared/join-form.js";
 import { landingPath } from "../shared/open-path.js";
 import { backLink, formCard, intro, joinBanner, show } from "./chrome.js";
 import { button, el, input } from "./dom.js";
 import { tryOpenNative } from "./game-screen.js";
+import { forgetObjectUrls } from "./game/object-urls.js";
 import { renderHome } from "./home.js";
 import { connectAt, hostVersions, refresh, state } from "./state.js";
 import type { ServerProbe, ServerSummary } from "../shared/types";
@@ -21,6 +22,7 @@ export function renderError(message: string): void {
 
 export async function forgetServer(server: ServerSummary): Promise<void> {
   await window.odm.removeServer(server.id);
+  forgetObjectUrls();
   await refresh();
   renderHome();
 }
@@ -73,6 +75,7 @@ export function renderDeleteAccount(server: ServerSummary): void {
           error.textContent = result.error;
           return;
         }
+        forgetObjectUrls();
         await refresh();
         const { deletion } = result;
         const card = formCard(
@@ -314,6 +317,16 @@ export function renderAuth(
   userField.autocomplete = "username";
   const [passLabel, passField] = input("Password", "password");
   passField.autocomplete = mode === "login" ? "current-password" : "new-password";
+  // Said before anything is typed: a public server on plain http.
+  if (insecureRemoteOrigin(probe.origin)) {
+    form.append(
+      el(
+        "p",
+        "hint warn",
+        `${new URL(probe.origin).host} is not using HTTPS, so your ${shape.password ? "password, " : ""}sign-in and game cross the internet unencrypted. Ask whoever runs it for an https:// address if they have one.`,
+      ),
+    );
+  }
   form.append(userLabel);
   if (shape.password) form.append(passLabel);
   let inviteField: HTMLInputElement | null = null;

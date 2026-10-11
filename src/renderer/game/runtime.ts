@@ -8,7 +8,7 @@ import type { HostClient, StreamStop } from "../api/host.js";
 import type { SseEvent } from "../../shared/sse.js";
 import { hostRelativePath } from "../../shared/host-fetch.js";
 import { localAsset } from "./local-assets.js";
-import { hold, keepObjectUrlsFor, objectUrlFor } from "./object-urls.js";
+import { forgetObjectUrls, hold, keepObjectUrlsFor, objectUrlFor } from "./object-urls.js";
 import { canStreamAudio, liveAudioUrl } from "./live-audio.js";
 import { isLiveNarrationPath } from "../../shared/live-audio.js";
 
@@ -55,6 +55,7 @@ function patchedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Res
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   const path = hostRelativePath(url, document.baseURI);
   if (path === null) return base(input, init);
+  if (path.startsWith("/api/auth/logout")) forgetObjectUrls();
   const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
   headers.set("authorization", `Bearer ${client.session.token}`);
   headers.set("x-odm-client", "shell");

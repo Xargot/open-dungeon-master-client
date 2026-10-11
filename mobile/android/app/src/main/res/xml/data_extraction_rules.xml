@@ -2,21 +2,37 @@
 <!-- Android 12+ backup and device-to-device transfer. Everything under
      files/ that belongs to the phone-hosted world stays on the phone: the
      SQLite database and its key, uploaded media, the unpacked server payload
-     and the server log. What remains (Capacitor preferences: saved servers
-     and the local profile) is small and worth carrying to a new phone. -->
+     (and the server.new/server.old trees of an upgrade in progress) and the
+     logs. So do the secrets (odm_secrets.xml, SecretStorePlugin.java): the
+     tokens, made-up passwords and table secrets, sealed under a Keystore key
+     that never leaves the phone anyway. What remains (the saved-server list
+     without its tokens, small preferences) follows the player to a new
+     phone, which asks them to sign in again. -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="file" path="data" />
         <exclude domain="file" path="server" />
+        <exclude domain="file" path="server.new" />
+        <exclude domain="file" path="server.old" />
         <exclude domain="file" path="server.keep" />
         <exclude domain="file" path="local-server.log" />
+        <exclude domain="file" path="local-server.log.1" />
+        <exclude domain="file" path="tunnel.log" />
+        <exclude domain="file" path="tunnel.log.1" />
         <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="odm_secrets.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="file" path="data" />
         <exclude domain="file" path="server" />
+        <exclude domain="file" path="server.new" />
+        <exclude domain="file" path="server.old" />
         <exclude domain="file" path="server.keep" />
         <exclude domain="file" path="local-server.log" />
+        <exclude domain="file" path="local-server.log.1" />
+        <exclude domain="file" path="tunnel.log" />
+        <exclude domain="file" path="tunnel.log.1" />
         <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="odm_secrets.xml" />
     </device-transfer>
 </data-extraction-rules>

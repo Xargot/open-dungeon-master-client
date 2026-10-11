@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   detectInstallKind,
   fetchLatestReleaseVersion,
   isNewerVersion,
+  packageAssetName,
   Updater,
   versionFromTag,
 } from "../dist/main/updater.js";
@@ -142,6 +144,36 @@ test("fetchLatestReleaseVersion reads the tag and treats 404 as no release", asy
   await assert.rejects(() => fetchLatestReleaseVersion(broken), /503/);
 });
 
+const PACKAGE = new Uint8Array([1, 2, 3, 4]);
+
+// The release as GitHub's API lists it: every package these tests download,
+// each with the digest of `bytes`.
+function releaseListing(version, bytes) {
+  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const names = new Set();
+  for (const [kind, platform, arch, format] of [
+    ["managed", "linux", "x64", "rpm"],
+    ["managed", "linux", "x64", "deb"],
+    ["portable", "linux", "x64", ""],
+    ["flatpak", "linux", "x64", "rpm"],
+    ["mac", "darwin", "arm64", ""],
+    ["mac", "darwin", "x64", ""],
+  ]) {
+    names.add(packageAssetName(version, kind, platform, arch, format));
+  }
+  return { assets: [...names].map((name) => ({ name, digest })) };
+}
+
+// GitHub for the updater: the release listing from the API, the package
+// from the download host. `listed` is what the listing vouches for.
+function githubFetch(file = PACKAGE, listed = PACKAGE) {
+  return async (url) => {
+    const tag = /\/releases\/tags\/v([^/]+)$/.exec(String(url));
+    if (tag) return Response.json(releaseListing(tag[1], listed));
+    return new Response(file, { status: 200, headers: { "content-length": String(file.byteLength) } });
+  };
+}
+
 // A stand-in for the machine: records what the updater asked it to do.
 function fakeHost(overrides = {}) {
   const log = { opened: [], revealed: [], ran: [], relaunched: [] };
@@ -161,8 +193,7 @@ function fakeHost(overrides = {}) {
       return { code: 0, stderr: "" };
     },
     relaunch: (execPath) => void log.relaunched.push(execPath ?? ""),
-    fetchImpl: async () =>
-      new Response(new Uint8Array([1, 2, 3, 4]), { status: 200, headers: { "content-length": "4" } }),
+    fetchImpl: githubFetch(),
     ...overrides,
   };
   return { host, log };
@@ -203,7 +234,7 @@ test("an rpm install downloads the package, installs it through pkexec and resta
     has: async (command) => ["pkexec", "dnf", "rpm"].includes(command),
     fetchImpl: async (url) => {
       asked.push(String(url));
-      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200, headers: { "content-length": "4" } });
+      return githubFetch()(url);
     },
   });
   const updater = new Updater("managed", "0.12.0", async () => "0.12.1", 0, host);
@@ -213,7 +244,10 @@ test("an rpm install downloads the package, installs it through pkexec and resta
   assert.equal(status.canDownload, true);
   await updater.downloadAndInstall();
   const file = path.join(folder, "open-dungeon-master-client-0.12.1-x86_64.rpm");
-  assert.deepEqual(asked, ["https://github.com/Lebbitheplow/open-dungeon-master-client/releases/download/v0.12.1/open-dungeon-master-client-0.12.1-x86_64.rpm"]);
+  assert.deepEqual(asked, [
+    "https://api.github.com/repos/Lebbitheplow/open-dungeon-master-client/releases/tags/v0.12.1",
+    "https://github.com/Lebbitheplow/open-dungeon-master-client/releases/download/v0.12.1/open-dungeon-master-client-0.12.1-x86_64.rpm",
+  ]);
   assert.deepEqual(log.ran, [["pkexec", "dnf", "install", "-y", file]]);
   assert.deepEqual(log.relaunched, [""]);
   assert.deepEqual(log.opened, []);
@@ -645,6 +679,45 @@ test("the startup check waits for the page and keeps its find for a late page", 
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(seen.state, "available");
   assert.equal(updater.lastFound().latest, "0.12.1");
+});
+
+test("a package that does not hash to the release's checksum is never installed", async () => {
+  const fsp = await import("node:fs/promises");
+  const folder = await tempFolder();
+  const { host, log } = fakeHost({
+    format: "deb",
+    downloadsDir: () => folder,
+    has: async (command) => ["pkexec", "apt-get", "dpkg"].includes(command),
+    // A real deb's worth of bytes from the download host, but not the ones
+    // the release lists.
+    fetchImpl: githubFetch(new Uint8Array([9, 9, 9, 9]), PACKAGE),
+  });
+  const updater = new Updater("managed", "0.12.0", async () => "0.12.1", 0, host);
+  await assert.rejects(() => updater.downloadAndInstall(), /does not match the release's checksum/);
+  assert.deepEqual(log.ran, []);
+  assert.deepEqual(log.relaunched, []);
+  assert.equal(updater.progress().state, "error");
+  assert.deepEqual(await fsp.readdir(folder), []);
+  await fsp.rm(folder, { recursive: true, force: true });
+});
+
+test("a release that lists no checksum for the package downloads nothing", async () => {
+  const fsp = await import("node:fs/promises");
+  const folder = await tempFolder();
+  const asked = [];
+  const { host, log } = fakeHost({
+    format: "deb",
+    downloadsDir: () => folder,
+    fetchImpl: async (url) => {
+      asked.push(String(url));
+      return Response.json({ assets: [{ name: "open-dungeon-master-client-0.12.1-amd64.deb", digest: null }] });
+    },
+  });
+  const updater = new Updater("managed", "0.12.0", async () => "0.12.1", 0, host);
+  await assert.rejects(() => updater.downloadAndInstall(), /lists no checksum/);
+  assert.equal(asked.length, 1, "only the listing was asked for");
+  assert.deepEqual(log.ran, []);
+  await fsp.rm(folder, { recursive: true, force: true });
 });
 
 test("a failed package download leaves no partial file and says why", async () => {

@@ -6,11 +6,11 @@ import { pipeline } from "node:stream/promises";
 
 // Shared download plumbing for the local AI installers. Every multi-gigabyte
 // artifact goes through the same gate: a free-space check before the first
-// byte, byte-range resume, a size check against Content-Length, a magic-byte
-// sniff so a 404 HTML page can never land named .gguf, and (when a checksum
-// is known) sha256 verified while streaming. A network drop keeps the
-// partial for resume; a failed verification deletes it, because those bytes
-// can never become the right file.
+// byte, byte-range resume (only onto the offset the server confirms), a size
+// check against Content-Length, a magic-byte sniff so a 404 HTML page can
+// never land named .gguf, and sha256 verified while streaming. A network
+// drop or a stall keeps the partial for resume; a failed verification
+// deletes it, because those bytes can never become the right file.
 
 export type FileKind = "gguf" | "safetensors" | "archive";
 
@@ -42,24 +42,30 @@ export function hfFileInfo(url: string): HfFile | null {
   return { repo: match[1], revision: match[2], file: match[3] };
 }
 
-// The Hugging Face tree API lists each LFS file's sha256. Best effort with a
-// short timeout: a slow or absent answer silently downgrades verification to
-// the size and magic checks, which still catch every non-model payload.
-export async function fetchHfSha256(url: string, timeoutMs = 5000): Promise<string | null> {
+// The Hugging Face tree API lists each LFS file's sha256. It used to be best
+// effort: a slow or failed answer quietly dropped the hash check and the
+// model was trusted on size and header alone. Now a lookup that fails is a
+// failed install the player can retry (the partial download is kept), and
+// a file the repository no longer lists is refused.
+export async function fetchHfSha256(url: string, fetchImpl: typeof fetch = fetch, timeoutMs = 20_000): Promise<string> {
   const info = hfFileInfo(url);
-  if (!info) return null;
+  if (!info) throw new Error("That model is not from a source the app can verify.");
+  const folder = info.file.includes("/") ? `/${info.file.slice(0, info.file.lastIndexOf("/"))}` : "";
+  let files: { path?: string; lfs?: { oid?: string } }[];
   try {
-    const res = await fetch(
-      `https://huggingface.co/api/models/${info.repo}/tree/${info.revision}`,
-      { signal: AbortSignal.timeout(timeoutMs) },
-    );
-    if (!res.ok) return null;
-    const files = (await res.json()) as { path?: string; lfs?: { oid?: string } }[];
-    const oid = files.find((entry) => entry.path === info.file)?.lfs?.oid;
-    return typeof oid === "string" && /^[0-9a-f]{64}$/.test(oid) ? oid : null;
+    const res = await fetchImpl(`https://huggingface.co/api/models/${info.repo}/tree/${info.revision}${folder}`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    files = (await res.json()) as typeof files;
   } catch {
-    return null;
+    throw new Error("Could not look up the model's checksum on Hugging Face. Check your connection and try again.");
   }
+  const oid = Array.isArray(files) ? files.find((entry) => entry?.path === info.file)?.lfs?.oid : undefined;
+  if (typeof oid !== "string" || !/^[0-9a-f]{64}$/.test(oid)) {
+    throw new Error("Hugging Face no longer lists that model file, so it was not downloaded.");
+  }
+  return oid;
 }
 
 export async function freeDiskGb(dir: string): Promise<number> {
@@ -87,9 +93,22 @@ export async function ensureDiskSpace(dir: string, neededGb: number): Promise<vo
 
 export interface DownloadOptions {
   kind: FileKind;
-  // Hex sha256 to enforce; null skips the hash and leans on size plus magic.
+  // Hex sha256 to enforce. Every caller has one now; null still skips the
+  // hash and leans on size plus magic.
   sha256?: string | null;
   onProgress: (percent: number) => void;
+  // A transfer that sends nothing for this long is dropped (partial kept).
+  idleMs?: number;
+  fetchImpl?: typeof fetch;
+}
+
+const IDLE_MS = 90_000;
+
+// "bytes 100-199/200" -> { start: 100, total: 200 }; total -1 when "*".
+function contentRange(header: string | null): { start: number; total: number } | null {
+  const match = /^bytes (\d+)-\d+\/(\d+|\*)$/.exec((header ?? "").trim());
+  if (!match) return null;
+  return { start: Number(match[1]), total: match[2] === "*" ? -1 : Number(match[2]) };
 }
 
 function discard(partial: string, message: string): never {
@@ -99,25 +118,61 @@ function discard(partial: string, message: string): never {
 
 async function streamTo(url: string, partial: string, opts: DownloadOptions): Promise<void> {
   const offset = fs.existsSync(partial) ? fs.statSync(partial).size : 0;
-  const response = await fetch(url, {
+  const idle = new AbortController();
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const stillAlive = (): void => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(
+      () => idle.abort(new Error("The download stalled. Try again; it picks up where it stopped.")),
+      opts.idleMs ?? IDLE_MS,
+    );
+  };
+  stillAlive();
+  try {
+    await receive(url, partial, offset, opts, idle.signal, stillAlive);
+  } finally {
+    clearTimeout(idleTimer);
+  }
+}
+
+async function receive(
+  url: string,
+  partial: string,
+  offset: number,
+  opts: DownloadOptions,
+  signal: AbortSignal,
+  stillAlive: () => void,
+): Promise<void> {
+  const response = await (opts.fetchImpl ?? fetch)(url, {
     redirect: "follow",
     headers: offset > 0 ? { range: `bytes=${offset}-` } : {},
+    signal,
   });
   if (!response.ok && response.status !== 206) {
     throw new Error(`Download failed (${response.status}).`);
   }
-  const resumed = response.status === 206;
+  let resumed = response.status === 206;
+  // A 206 must say it starts exactly where the partial ends; appending any
+  // other range would splice the wrong bytes into the file.
+  const range = resumed ? contentRange(response.headers.get("content-range")) : null;
+  if (resumed && (!range || range.start !== offset)) {
+    await response.body?.cancel().catch(() => undefined);
+    fs.rmSync(partial, { force: true });
+    return receive(url, partial, 0, opts, signal, stillAlive);
+  }
   if (!resumed && offset > 0) fs.rmSync(partial, { force: true });
+  resumed = resumed && offset > 0;
   const start = resumed ? offset : 0;
   const hash = opts.sha256 ? crypto.createHash("sha256") : null;
   if (hash && start > 0) {
     // Resumed bytes are already on disk; they must count toward the hash.
     for await (const chunk of fs.createReadStream(partial)) hash.update(chunk as Buffer);
   }
-  const total = Number(response.headers.get("content-length") || 0) + start;
+  const total = range && range.total > 0 ? range.total : Number(response.headers.get("content-length") || 0) + start;
   let done = start;
   const counter = new Transform({
     transform: (chunk: Buffer, _encoding, next) => {
+      stillAlive();
       done += chunk.length;
       hash?.update(chunk);
       if (total > 0) opts.onProgress((done / total) * 100);

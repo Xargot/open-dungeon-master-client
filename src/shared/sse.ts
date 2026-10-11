@@ -28,8 +28,24 @@ export function streamRequestHeaders(lastId: string): Record<string, string> {
   return { accept: "text/event-stream", ...(lastId ? { "last-event-id": lastId } : {}) };
 }
 
-export function createSseParser(onEvent: (event: SseEvent) => void): SseParser {
+// The most one event (or one unfinished line) may hold. A long-lived stream
+// is legitimately unbounded in total, but no single event the server sends
+// comes near this; a host that streams a line without end is cut off here
+// instead of growing the buffer until the app runs out of memory.
+export const SSE_MAX_EVENT_CHARS = 8 * 1024 * 1024;
+
+export class SseOverflowError extends Error {
+  constructor() {
+    super("An event on the stream was larger than this app accepts.");
+  }
+}
+
+export function createSseParser(
+  onEvent: (event: SseEvent) => void,
+  maxEventChars: number = SSE_MAX_EVENT_CHARS,
+): SseParser {
   let buffer = "";
+  let dataChars = 0;
   let lastId = "";
   let eventName = "";
   let dataLines: string[] = [];
@@ -41,6 +57,7 @@ export function createSseParser(onEvent: (event: SseEvent) => void): SseParser {
     }
     eventName = "";
     dataLines = [];
+    dataChars = 0;
     sawData = false;
   };
 
@@ -59,6 +76,8 @@ export function createSseParser(onEvent: (event: SseEvent) => void): SseParser {
         eventName = value;
         break;
       case "data":
+        dataChars += value.length + 1;
+        if (dataChars > maxEventChars) throw new SseOverflowError();
         dataLines.push(value);
         sawData = true;
         break;
@@ -95,6 +114,7 @@ export function createSseParser(onEvent: (event: SseEvent) => void): SseParser {
         start = end + skip;
       }
       buffer = buffer.slice(start);
+      if (buffer.length > maxEventChars) throw new SseOverflowError();
     },
     lastEventId: () => lastId,
   };

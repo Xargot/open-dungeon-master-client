@@ -133,3 +133,15 @@ test("a probe or registry that throws does not break the search", async () => {
   );
   assert.deepEqual(result, { found: true, origin: "https://b.example", moved: true });
 });
+
+// Audit S9: a saved https world is never followed to plain http on the open
+// internet, even when the registry points there and the world answers.
+test("an https world is not relocated to an insecure public address", async () => {
+  const { deps } = world({ "http://203.0.113.9:3005": "world-1" }, { ABCD: "http://203.0.113.9:3005" });
+  const result = await relocateWorld({ origin: "https://a.example", instanceId: "world-1", codes: ["ABCD"] }, deps);
+  assert.deepEqual(result, { found: false });
+  // A LAN address is still fine.
+  const lan = world({ "http://192.168.1.9:3005": "world-1" }, { ABCD: "http://192.168.1.9:3005" });
+  const moved = await relocateWorld({ origin: "https://a.example", instanceId: "world-1", codes: ["ABCD"] }, lan.deps);
+  assert.deepEqual(moved, { found: true, origin: "http://192.168.1.9:3005", moved: true });
+});

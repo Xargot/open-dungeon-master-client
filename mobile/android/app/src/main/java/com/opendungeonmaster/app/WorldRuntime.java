@@ -112,6 +112,11 @@ public final class WorldRuntime {
         return new File(app.getFilesDir(), "data");
     }
 
+    /** Where the world's server stages a world archive it packs or checks (its world-archive.ts). */
+    public File transferDir() {
+        return new File(dataDir(), "world-transfer");
+    }
+
     private File dbFile() {
         return new File(dataDir(), "odm.sqlite");
     }

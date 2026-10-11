@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { KEEP, KEEP_IN_SRC, pruneServerPayload } from "../scripts/prune-server-payload.mjs";
+import { KEEP, KEEP_IN_SRC, pruneAmbienceLibrary, pruneServerPayload } from "../scripts/prune-server-payload.mjs";
 
 function stage(entries) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "odm-prune-"));
@@ -245,6 +245,37 @@ test("source maps, declarations, TypeScript sources, readmes and test folders le
     ];
     for (const rel of kept) assert.ok(fs.existsSync(path.join(dir, rel)), `${rel} should stay`);
     assert.equal(pruneDeadFiles(dir), 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the sound library leaves the payload, the rest of public stays", () => {
+  const dir = stage([
+    "server.js",
+    "package.json",
+    "public/ambience/tavern.mp3",
+    "public/ambience/battle-2.ogg",
+    "public/ambience/manifest.json",
+    "public/assets/placeholders/plain.webp",
+    "public/uploads/.keep",
+  ]);
+  try {
+    const dropped = pruneServerPayload(dir);
+    assert.ok(dropped.includes("public/ambience (2 tracks; the admin panel installs the sound pack)"), dropped.join(", "));
+    assert.ok(!fs.existsSync(path.join(dir, "public", "ambience")), "the folder goes whole, manifest included");
+    assert.ok(fs.existsSync(path.join(dir, "public", "assets", "placeholders", "plain.webp")));
+    assert.ok(fs.existsSync(path.join(dir, "public", "uploads", ".keep")));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a payload with no sound library prunes without mentioning one", () => {
+  const dir = stage(["server.js", "package.json", "public/assets/icons/a.webp"]);
+  try {
+    assert.equal(pruneAmbienceLibrary(dir), 0);
+    assert.deepEqual(pruneServerPayload(dir), []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

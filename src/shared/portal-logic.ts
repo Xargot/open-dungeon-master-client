@@ -7,6 +7,11 @@
 
 export const PORTAL_ORIGIN_COOKIE = "odm_portal_origin";
 export const PORTAL_TOKEN_COOKIE = "odm_portal_token";
+// The two above signed with the secret the shell started its server with
+// (ODM_PORTAL_SECRET): the server's src/lib/portal.ts forwards nothing
+// without a signature that matches, so nobody who reaches a shared world
+// can point it at a host of their own.
+export const PORTAL_SIG_COOKIE = "odm_portal_sig";
 
 // The first bundled server that carries the proxy.
 export const PORTAL_MIN_SERVER = "0.16.0";

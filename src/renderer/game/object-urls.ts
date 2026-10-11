@@ -1,9 +1,10 @@
 // Pictures and audio fetched with the player's token (portraits, uploads,
 // generated art) live as object URLs. This is the bookkeeping around them:
-// one cache per app session (kept across world entries, emptied only when
-// the host changes, so a second look at a table does not download every
-// portrait again), a byte cap beside the entry cap, and revocation deferred
-// while anything still shows a URL.
+// one cache per app session (kept across world entries, emptied when the
+// host or the account changes, so a second look at a table does not
+// download every portrait again but another account never sees the last
+// one's private pictures), a byte cap beside the entry cap, and revocation
+// deferred while anything still shows a URL.
 import type { HostClient } from "../api/host.js";
 import { createObjectUrlCache, createRevokePool } from "../../shared/object-url-cache.js";
 
@@ -58,13 +59,22 @@ const pool = createRevokePool({
 
 const cache = createObjectUrlCache({ maxEntries: MAX_ENTRIES, maxBytes: MAX_BYTES, retire: pool.retire });
 
-let origin = "";
+let holder = "";
 
-// Called on every world entry: the cache serves one host at a time, keyed
-// by origin and path (query included, so a sized variant is its own entry).
+// Called on every world entry: the cache serves one session at a time (the
+// host and the token that signed in to it), keyed by origin and path
+// (query included, so a sized variant is its own entry).
 export function keepObjectUrlsFor(client: HostClient): void {
-  if (origin === client.origin) return;
-  origin = client.origin;
+  const session = `${client.origin}\n${client.session.token}`;
+  if (holder === session) return;
+  holder = session;
+  cache.clear();
+}
+
+// Signing out, or forgetting a server: nothing fetched with that session
+// stays cached.
+export function forgetObjectUrls(): void {
+  holder = "";
   cache.clear();
 }
 

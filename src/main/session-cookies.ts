@@ -1,5 +1,5 @@
 import { session } from "electron";
-import { PORTAL_ORIGIN_COOKIE, PORTAL_TOKEN_COOKIE } from "../shared/portal-logic";
+import { PORTAL_ORIGIN_COOKIE, PORTAL_SIG_COOKIE, PORTAL_TOKEN_COOKIE } from "../shared/portal-logic";
 
 // Each server gets its own persistent partition so cookies, storage and
 // permissions never leak between servers.
@@ -46,16 +46,18 @@ export async function applySessionCookie(
   }
 }
 
-// Portal mode: the two cookies on the shell's local origin that tell the
-// bundled server which host to forward data calls to and with which
-// token (the server's src/lib/portal.ts reads them). Same write counting as
-// the session cookie, since the logout watcher listens for their removal.
+// Portal mode: the cookies on the shell's local origin that tell the
+// bundled server which host to forward data calls to and with which token,
+// and the signature that proves the shell set them (the server's
+// src/lib/portal.ts reads all three). Same write counting as the session
+// cookie, since the logout watcher listens for their removal.
 export async function applyPortalCookies(
   partition: string,
   localOrigin: string,
   hostOrigin: string,
   token: string,
   expiresAt: string,
+  signature: string,
 ): Promise<void> {
   const expiry = Date.parse(expiresAt);
   const cookies = session.fromPartition(partition).cookies;
@@ -64,6 +66,7 @@ export async function applyPortalCookies(
     for (const [name, value] of [
       [PORTAL_ORIGIN_COOKIE, hostOrigin],
       [PORTAL_TOKEN_COOKIE, token],
+      [PORTAL_SIG_COOKIE, signature],
     ] as const) {
       await cookies.set({
         url: localOrigin,

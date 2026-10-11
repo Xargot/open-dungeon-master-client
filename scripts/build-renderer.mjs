@@ -109,6 +109,21 @@ function localAssetsPlugin(server) {
   };
 }
 
+// The server's components import their own stylesheets (the ones its
+// src/app/styles/component-sheets.css lists) so Next loads each with the
+// chunk that renders it. The apps fold those sheets into game.css instead
+// (buildGameCss), so in the game bundle a stylesheet import is an empty
+// module.
+function serverCssPlugin() {
+  return {
+    name: "odm-server-css",
+    setup(build) {
+      build.onResolve({ filter: /\.css$/ }, (args) => ({ path: args.path, namespace: "odm-server-css" }));
+      build.onLoad({ filter: /.*/, namespace: "odm-server-css" }, () => ({ contents: "", loader: "js" }));
+    },
+  };
+}
+
 // The game bundle's view of the world: React is Preact, Next's pieces are
 // the shims, "@/" is the server's src.
 export function gameBuildOptions(server) {
@@ -117,7 +132,7 @@ export function gameBuildOptions(server) {
     ...rendererBuildOptions,
     format: "esm",
     splitting: true,
-    plugins: [localAssetsPlugin(server)],
+    plugins: [localAssetsPlugin(server), serverCssPlugin()],
     alias: {
       react: path.join(shims, "react.js"),
       "react-dom": path.join(shims, "react-dom.js"),
@@ -161,10 +176,15 @@ export function buildGameCss(server, outDir) {
       .readFileSync(file, "utf8")
       .replace(/^@import\s+"(\.\/[^"]+\.css)";[ \t]*$/gm, (_, next) => inline(path.join(path.dirname(file), next)));
   const globals = inline(path.join(server, "src", "app", "globals.css"));
+  // The sheets the web loads with their components, after globals as the
+  // server's own file says; a server from before the split has none.
+  const sheets = path.join(server, "src", "app", "styles", "component-sheets.css");
+  const componentSheets = fs.existsSync(sheets) ? inline(sheets) : "";
   fs.writeFileSync(
     entry,
     [
       globals,
+      componentSheets,
       `@source "${rel(path.join(server, "src", "app"))}";`,
       `@source "${rel(path.join(server, "src", "components"))}";`,
       `@source "${rel(path.join(server, "src", "lib"))}";`,

@@ -92,6 +92,9 @@ repositories {
 dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    // EdgeToEdge.enable in MainActivity; Capacitor only has the library as
+    // an implementation dependency, so the app names it itself.
+    implementation "androidx.activity:activity:$androidxActivityVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')

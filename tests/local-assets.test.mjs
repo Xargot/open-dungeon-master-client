@@ -8,8 +8,8 @@ import { createLocalAssetIndex, localFolder } from "../dist/shared/local-assets.
 const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 // A host path resolves to the app's own copy only when the build's manifest
-// lists it; the icons always do (the Settings screen draws them with no
-// host); everything else goes to the host, which may be newer than the app.
+// lists it; a build whose manifest lists no icons resolves every icon
+// locally; everything else goes to the host, which may be newer than the app.
 test("the manifest decides which host paths the app answers itself", () => {
   const index = createLocalAssetIndex({
     "/assets/tiles/": ["grass.webp"],
@@ -26,6 +26,15 @@ test("the manifest decides which host paths the app answers itself", () => {
   assert.equal(index.localPath("/uploads/grass.webp"), null);
   assert.equal(index.localPath("//assets/tiles/grass.webp"), null);
   assert.equal(index.localPath("assets/tiles/grass.webp"), null);
+});
+
+// Audit C3: once the manifest lists icons, an icon a newer host has and the
+// app does not goes to the host instead of a file the app does not carry.
+test("a manifest that lists icons sends an unlisted icon to the host", () => {
+  const index = createLocalAssetIndex({ "/assets/icons/glyph/": ["die-d20.webp"] });
+  assert.equal(index.localPath("/assets/icons/glyph/die-d20.webp"), "game/icons/glyph/die-d20.webp");
+  assert.equal(index.localPath("/assets/icons/glyph/newer-glyph.webp"), null);
+  assert.equal(index.localPath("/assets/icons/cards/strike.webp"), null);
 });
 
 // The build copied every file it listed to where the runtime will look.

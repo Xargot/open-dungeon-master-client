@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { HardwareInfo, LocalAiStatus } from "../../shared/types";
 import { downloadVerified, ensureDiskSpace } from "./download";
+import { openLog } from "../log-files";
 
 const runFile = promisify(execFile);
 
@@ -17,8 +18,10 @@ const PORT = 8188;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 
 // Pinned ComfyUI release: the requirements set and the API surface are only
-// tested against this tag.
+// tested against this tag. A tag can be moved, so the clone must also land
+// on the commit the tag named when it was pinned.
 export const COMFY_TAG = "v0.34.0";
+export const COMFY_COMMIT = "12d5279438bfefc058a269eae805ceab6047777f";
 const COMFY_REPO = "https://github.com/comfyanonymous/ComfyUI.git";
 
 // The one curated checkpoint: SDXL base from Stability's ungated repo. Real
@@ -137,7 +140,7 @@ export class ComfyManager {
   // pip's output can run to megabytes, so steps stream to comfy.log instead
   // of buffering; the label is the only progress a package install can give.
   private run(command: Command, label: string): Promise<void> {
-    const log = fs.openSync(this.logFile, "a");
+    const log = openLog(this.logFile);
     return new Promise<void>((resolve, reject) => {
       const child = spawn(command.bin, command.args, { stdio: ["ignore", log, log] });
       child.once("error", (err) => {
@@ -173,6 +176,11 @@ export class ComfyManager {
         fs.rmSync(this.appDir, { recursive: true, force: true });
         onProgress("Downloading ComfyUI", 2);
         await this.run(clone, "Downloading ComfyUI");
+        const { stdout } = await runFile("git", ["-C", this.appDir, "rev-parse", "HEAD"]);
+        if (stdout.trim() !== COMFY_COMMIT) {
+          fs.rmSync(this.appDir, { recursive: true, force: true });
+          throw new Error(`ComfyUI ${COMFY_TAG} is not the release this app was tested with, so it was not installed.`);
+        }
       }
       if (!fs.existsSync(venvPython(this.rootDir, process.platform))) {
         onProgress("Creating the Python environment", 8);
@@ -218,7 +226,7 @@ export class ComfyManager {
       return;
     }
     const python = venvPython(this.rootDir, process.platform);
-    const log = fs.openSync(this.logFile, "a");
+    const log = openLog(this.logFile);
     const child = spawn(
       python,
       [path.join(this.appDir, "main.py"), "--listen", "127.0.0.1", "--port", String(PORT)],

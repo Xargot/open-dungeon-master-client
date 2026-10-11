@@ -134,6 +134,7 @@ export function unmountGame(): void {
   mount = null;
   mountedHost = "";
   (window as { odmMountedHostId?: string }).odmMountedHostId = "";
+  window.odm.gameMounted?.("");
   if (resizeWatcher) {
     window.removeEventListener("resize", resizeWatcher);
     resizeWatcher = null;
@@ -236,6 +237,9 @@ export async function tryOpenNative(hostId: string, path: string, serverVersion:
   // The Android bridge reads this to fetch a host document for the system
   // viewer (docs/vtt-parity-implementation-plan.md 18.2, phase 21).
   (window as { odmMountedHostId?: string }).odmMountedHostId = hostId;
+  // The desktop fetches a document the page asks to open (window.odm
+  // .openDocument) with this host's session.
+  window.odm.gameMounted?.(hostId);
   return true;
 }
 

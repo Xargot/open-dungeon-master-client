@@ -284,3 +284,81 @@ test("published room codes survive a restart so they can be taken offline", () =
   store.setPublishedCodes([]);
   assert.deepEqual(store.publishedCodes(), []);
 });
+
+// Audit S8: with "keep sign-ins" off, a sign-in to a host where the player
+// typed their own password lives in memory only; the device world and
+// room-code accounts, whose passwords only this file holds, stay saved.
+test("sign-ins kept for this run only never reach the file, and come back when kept again", () => {
+  const { store, dir } = freshStore();
+  const file = path.join(dir, "servers.json");
+  assert.deepEqual(store.credentialStorage(), { protection: "keyring", keepSignIns: true });
+  const typed = store.upsert({ origin: "https://a.example", name: "A", username: "kaleb", token: "typed-tok", tokenExpiresAt: future });
+  const minted = store.upsert({
+    origin: "https://b.example",
+    name: "B",
+    username: "guest",
+    token: "room-tok",
+    tokenExpiresAt: future,
+    secret: "app-made",
+  });
+  store.upsert({ id: LOCAL_SERVER_ID, origin: "http://127.0.0.1:3005", name: "Local", username: "me", token: "local-tok", tokenExpiresAt: future, secret: "local-pass" });
+
+  store.setKeepSignIns(false);
+  assert.equal(store.credentialStorage().keepSignIns, false);
+  const onDisk = fs.readFileSync(file, "utf8");
+  assert.ok(!onDisk.includes("typed-tok"), "the typed-password sign-in left the file");
+  assert.ok(onDisk.includes("enc:room-tok") && onDisk.includes("enc:local-tok"), "app-made sign-ins stay saved");
+  assert.equal(store.token(typed.id), "typed-tok", "still signed in for this run");
+  assert.equal(store.summaries().find((entry) => entry.id === typed.id)?.hasToken, true);
+
+  // A new sign-in while it is off stays in memory too.
+  store.upsert({ origin: "https://a.example", name: "A", username: "kaleb", token: "typed-tok-2", tokenExpiresAt: future });
+  assert.ok(!fs.readFileSync(file, "utf8").includes("typed-tok-2"));
+  // Another run (a new store over the same file) has to sign in again there.
+  const nextRun = new ServerStore(file, crypt);
+  assert.equal(nextRun.token(typed.id), null);
+  assert.equal(nextRun.token(minted.id), "room-tok");
+  assert.equal(nextRun.token(LOCAL_SERVER_ID), "local-tok");
+
+  store.setKeepSignIns(true);
+  assert.ok(fs.readFileSync(file, "utf8").includes("enc:typed-tok-2"), "kept again, it is written back");
+  assert.equal(new ServerStore(file, crypt).token(typed.id), "typed-tok-2");
+});
+
+test("the store says when the computer has no real keyring", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "odm-store-"));
+  const store = new ServerStore(path.join(dir, "servers.json"), { ...crypt, protection: () => "obscured" });
+  assert.equal(store.credentialStorage().protection, "obscured");
+});
+
+// Audit C4: the registry is read once and served from memory until the file
+// changes underneath, and a caller's copy is its own.
+test("the registry is parsed once, re-read when the file changes, and never shared by reference", () => {
+  const { store, dir } = freshStore();
+  const file = path.join(dir, "servers.json");
+  const entry = store.upsert({ origin: "https://a.example", name: "A", username: "kaleb", token: "tok", tokenExpiresAt: future });
+  const reads = { count: 0 };
+  const original = fs.readFileSync;
+  fs.readFileSync = (...args) => {
+    if (args[0] === file) reads.count += 1;
+    return original(...args);
+  };
+  try {
+    for (let index = 0; index < 50; index += 1) {
+      store.list();
+      store.token(entry.id);
+      store.summaries();
+    }
+    assert.equal(reads.count, 0, "served from memory while the file is unchanged");
+    // Another writer (a second app instance) changes the file.
+    const other = new ServerStore(file, crypt);
+    other.upsert({ origin: "https://b.example", name: "B", username: "x", token: "t", tokenExpiresAt: future });
+    assert.equal(store.list().length, 2);
+    assert.ok(reads.count >= 1);
+  } finally {
+    fs.readFileSync = original;
+  }
+  const listed = store.get(entry.id);
+  listed.name = "changed by a caller";
+  assert.equal(store.get(entry.id).name, "A");
+});

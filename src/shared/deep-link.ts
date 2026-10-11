@@ -75,6 +75,44 @@ export function codeCandidates(raw: string): CodeCandidates {
 // or the broker, which nobody can pick; a link that names one is taken as
 // the host's own share link. Anything else must be confirmed by the
 // registry (the code resolves there) before the saved session follows it.
+// True for plain http to anything but this machine or a private network.
+// LAN play and a world on this computer stay on http by design; a public
+// server on http carries passwords, tokens and the game in the clear, so
+// the sign-in form says so and a saved https world is never silently moved
+// to such an address.
+export function insecureRemoteOrigin(origin: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  return url.protocol === "http:" && !privateHost(url.hostname);
+}
+
+function privateHost(raw: string): boolean {
+  const host = raw.replace(/^\[|\]$/g, "").toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  // A bare name ("gamebox") only resolves on the local network.
+  if (!host.includes(".") && !host.includes(":")) return true;
+  if (/\.(local|lan|home|internal|home\.arpa)$/.test(host)) return true;
+  const v4 = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(host);
+  if (v4) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    return (
+      a === 10 ||
+      a === 127 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254) ||
+      // Carrier-grade NAT space, which Tailscale's addresses live in.
+      (a === 100 && b >= 64 && b <= 127)
+    );
+  }
+  return host === "::1" || /^f[cd][0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host);
+}
+
 export function trustedTunnelOrigin(origin: string): boolean {
   return /^https:\/\/(play-[a-z0-9]+\.opendungeonmaster\.com|[a-z0-9-]+\.trycloudflare\.com)$/.test(
     (origin || "").trim().toLowerCase(),

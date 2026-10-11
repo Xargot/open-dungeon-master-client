@@ -347,6 +347,7 @@ h3:where(:not(.game-root *)) { font-size: 1rem; }
 p:where(:not(.game-root *)) { margin: 0; }
 p.sub { color: var(--ink-400); font-size: 0.95rem; margin: 0.4rem 0 1.25rem; text-wrap: pretty; }
 p.hint { color: var(--ink-500); font-size: 0.82rem; margin: 0.75rem 0 0; line-height: 1.5; }
+p.hint.warn { color: #fcd34d; margin: 0 0 0.75rem; animation: fade-up 320ms var(--ease-snap) both; }
 p.error { color: var(--danger); font-size: 0.88rem; min-height: 1.3rem; margin: 0.3rem 0 0; }
 p.error:empty { display: none; }
 

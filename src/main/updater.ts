@@ -209,6 +209,27 @@ export async function fetchLatestReleaseVersion(fetchImpl: typeof fetch = fetch)
   return versionFromTag(body.tag_name);
 }
 
+// The SHA-256 GitHub computed for a release file when it was uploaded, asked
+// of the API rather than the host the file downloads from. A package whose
+// bytes do not hash to it is never opened, unpacked or installed.
+export async function releaseAssetDigest(fetchImpl: typeof fetch, version: string, asset: string): Promise<string> {
+  const res = await fetchImpl(`https://api.github.com/repos/${REPO}/releases/tags/v${version}`, {
+    headers: { Accept: "application/vnd.github+json", "User-Agent": "open-dungeon-master-client" },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`GitHub answered ${res.status} while looking up version ${version}.`);
+  const body = (await res.json()) as { assets?: { name?: unknown; digest?: unknown }[] };
+  const digest = Array.isArray(body.assets) ? body.assets.find((entry) => entry?.name === asset)?.digest : undefined;
+  const match = typeof digest === "string" ? /^sha256:([0-9a-f]{64})$/.exec(digest) : null;
+  if (!match) throw new Error(`Version ${version} lists no checksum for ${asset}, so it was not downloaded.`);
+  return match[1]!;
+}
+
+// A package bigger than this is not one of ours.
+const MAX_PACKAGE_BYTES = 1024 * 1024 * 1024;
+// A download that sends nothing for this long is given up.
+const PACKAGE_IDLE_MS = 60_000;
+
 // Before the first release ships, the feed URL serves a 404. That is
 // "nothing to update to", not a failure worth showing the player.
 function isMissingFeed(err: unknown): boolean {
@@ -659,6 +680,8 @@ export class Updater {
     if (!host || !asset) {
       throw new Error(status.available ? INSTRUCTIONS[this.kind] || "This install cannot update itself." : "You already have the latest version.");
     }
+    const fetcher = host.fetchImpl ?? fetch;
+    const { createHash } = await import("node:crypto");
     const { createWriteStream } = await import("node:fs");
     const { mkdir, rename, rm } = await import("node:fs/promises");
     const pathModule = await import("node:path");
@@ -667,20 +690,37 @@ export class Updater {
     const target = pathModule.join(folder, asset);
     const partial = `${target}.part`;
     this.setProgress({ state: "downloading", percent: 0, latest: status.latest, error: "", message: "" });
+    const idle = new AbortController();
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const stillAlive = (): void => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => idle.abort(new Error(`The download of ${asset} stalled. Try again.`)), PACKAGE_IDLE_MS);
+    };
     try {
-      const res = await (host.fetchImpl ?? fetch)(`https://github.com/${REPO}/releases/download/v${status.latest}/${asset}`, {
+      const expected = await releaseAssetDigest(fetcher, status.latest, asset);
+      stillAlive();
+      const res = await fetcher(`https://github.com/${REPO}/releases/download/v${status.latest}/${asset}`, {
         headers: { "User-Agent": "open-dungeon-master-client" },
+        signal: idle.signal,
       });
       if (!res.ok || !res.body) throw new Error(`GitHub answered ${res.status} for ${asset}.`);
       const total = Number(res.headers.get("content-length")) || 0;
+      if (total > MAX_PACKAGE_BYTES) throw new Error(`${asset} is larger than any release package.`);
       const out = createWriteStream(partial);
+      const hash = createHash("sha256");
       let done = 0;
       let shown = -1;
       const reader = res.body.getReader();
       for (;;) {
         const chunk = await reader.read();
         if (chunk.done) break;
+        stillAlive();
         done += chunk.value.byteLength;
+        if (done > MAX_PACKAGE_BYTES) {
+          out.destroy();
+          throw new Error(`${asset} is larger than any release package.`);
+        }
+        hash.update(chunk.value);
         if (!out.write(chunk.value)) await new Promise<void>((resolve) => out.once("drain", () => resolve()));
         const percent = total ? Math.min(99, Math.floor((done / total) * 100)) : 0;
         if (percent !== shown) {
@@ -689,9 +729,14 @@ export class Updater {
         }
       }
       await new Promise<void>((resolve, reject) => out.end((err?: Error | null) => (err ? reject(err) : resolve())));
+      clearTimeout(idleTimer);
+      if (hash.digest("hex") !== expected) {
+        throw new Error(`The download of ${asset} does not match the release's checksum, so nothing was installed. Try again.`);
+      }
       await rename(partial, target);
       await this.apply(target, status.latest);
     } catch (err) {
+      clearTimeout(idleTimer);
       await rm(partial, { force: true }).catch(() => undefined);
       this.failed(err);
       throw err;

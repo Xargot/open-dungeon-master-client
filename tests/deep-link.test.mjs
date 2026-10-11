@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CODE_SHAPE,
+  insecureRemoteOrigin,
   joinLinkFromArgv,
   normalizeOrigin,
   originCandidates,
@@ -275,4 +276,31 @@ test("a saved seat follows only a tunnel hostname or a registry-confirmed addres
   assert.equal(trustedTunnelOrigin("https://evil.example"), false);
   assert.equal(trustedTunnelOrigin("http://play-abcd2345.opendungeonmaster.com"), false);
   assert.equal(trustedTunnelOrigin("https://play-abcd2345.opendungeonmaster.com.evil.example"), false);
+});
+
+// Audit S9: plain http is expected on this machine and the local network,
+// and flagged for anything that crosses the open internet.
+test("plain http is insecure only off this machine and off private networks", () => {
+  for (const origin of [
+    "http://127.0.0.1:3005",
+    "http://localhost:3005",
+    "http://192.168.1.50:3005",
+    "http://10.0.0.7",
+    "http://172.20.3.4:3005",
+    "http://100.101.102.103:3005",
+    "http://169.254.1.2",
+    "http://gamebox:3005",
+    "http://gamebox.local:3005",
+    "http://box.home.arpa",
+    "http://[::1]:3005",
+    "http://[fd12:3456::1]:3005",
+    "https://play.example.com",
+    "https://203.0.113.5",
+  ]) {
+    assert.equal(insecureRemoteOrigin(origin), false, origin);
+  }
+  for (const origin of ["http://play.example.com", "http://203.0.113.5:3005", "http://172.32.0.1", "http://[2001:db8::1]:3005"]) {
+    assert.equal(insecureRemoteOrigin(origin), true, origin);
+  }
+  assert.equal(insecureRemoteOrigin("not a url"), false);
 });

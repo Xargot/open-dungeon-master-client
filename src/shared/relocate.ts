@@ -16,6 +16,8 @@
 // Pure orchestration over injected I/O, so both shells share it and the tests
 // run under plain Node.
 
+import { insecureRemoteOrigin } from "./deep-link";
+
 export interface RelocateDeps {
   // The world answering at an origin, or null when nothing does.
   probe(origin: string): Promise<{ instanceId: string } | null>;
@@ -66,6 +68,9 @@ export async function relocateWorld(
     const candidate = await deps.resolveTable(code).catch(() => "");
     if (!candidate || tried.has(candidate)) continue;
     tried.add(candidate);
+    // A world saved at https is not followed to plain http on the open
+    // internet: the saved session would cross it in the clear.
+    if (world.origin.startsWith("https:") && insecureRemoteOrigin(candidate)) continue;
     const probed = await deps.probe(candidate).catch(() => null);
     if (probed && probed.instanceId === saved) {
       return { found: true, origin: candidate, moved: true };

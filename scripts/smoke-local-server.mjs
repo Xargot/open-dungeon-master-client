@@ -40,8 +40,18 @@ const child = spawn(electronPath, [path.join(vendorDir, "server.js")], {
     SQLITE_DB_PATH: path.join(dataDir, "smoke.sqlite"),
     DB_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
   },
-  stdio: ["ignore", "inherit", "inherit"],
+  stdio: ["ignore", "pipe", "inherit"],
 });
+
+// The first account on a server somebody runs takes the one-time setup
+// code the server prints at boot (src/lib/setup-code.ts), so the log is
+// read as it goes by and the code picked out of it.
+let log = "";
+child.stdout.on("data", (chunk) => {
+  log += chunk.toString();
+  process.stdout.write(chunk);
+});
+const setupCode = () => log.match(/\b([A-Z0-9]{4}-){3}[A-Z0-9]{4}\b/)?.[0];
 
 function fail(message) {
   console.error(`FAIL: ${message}`);
@@ -71,10 +81,10 @@ try {
   const register = await fetch(`${origin}/api/auth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: "smoketester", password: "smoke-pass-123" }),
+    body: JSON.stringify({ username: "smoketester", password: "smoke-pass-123", setupCode: setupCode() }),
   });
-  if (register.status !== 201) fail(`register returned ${register.status}`);
-  console.log("ok: first account created (admin)");
+  if (register.status !== 201) fail(`register returned ${register.status} (setup code ${setupCode() ? "read from the log" : "not found in the log"})`);
+  console.log("ok: first account created (admin, with the setup code from the log)");
 
   const token = await fetch(`${origin}/api/auth/token`, {
     method: "POST",
@@ -90,6 +100,19 @@ try {
   });
   if (!me.ok) fail(`bearer auth check returned ${me.status}`);
   console.log("ok: bearer auth accepted");
+
+  // The payload ships without the sound library (scripts/
+  // prune-server-payload.mjs); the server must report an empty one, not
+  // fail, and name the pack an admin can install.
+  const ambience = await fetch(`${origin}/api/ambience`, { headers: { authorization: `Bearer ${grant.token}` } });
+  if (!ambience.ok) fail(`ambience probe returned ${ambience.status}`);
+  const library = await ambience.json();
+  if (Object.keys(library.tracks ?? {}).length) fail("the payload still carries sound library tracks");
+  const pack = await fetch(`${origin}/api/admin/ambience`, { headers: { authorization: `Bearer ${grant.token}` } });
+  if (!pack.ok) fail(`sound pack status returned ${pack.status}`);
+  const packStatus = await pack.json();
+  if (!/^https:\/\/.+ambience-pack\.zip$/.test(packStatus.packUrl ?? "")) fail(`sound pack URL looks wrong: ${packStatus.packUrl}`);
+  console.log(`ok: sound library absent, pack offered at ${packStatus.packUrl}`);
 
   console.log("SMOKE PASS");
 } finally {

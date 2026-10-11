@@ -2,14 +2,16 @@
 <resources>
 
     <!-- Always the dark night theme: the app has no light mode, so the
-         system bars keep light icons whatever the device setting. -->
+         system bars keep light icons whatever the device setting. The bars
+         themselves are transparent (MainActivity enables edge to edge on
+         every Android version; the statusBarColor and navigationBarColor
+         attributes are deprecated since Android 15), so the window
+         background is what shows behind them. -->
     <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
         <item name="colorPrimary">@color/colorPrimary</item>
         <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
         <item name="colorAccent">@color/colorAccent</item>
         <item name="android:windowBackground">@color/odm_night</item>
-        <item name="android:statusBarColor">@color/odm_night</item>
-        <item name="android:navigationBarColor">@color/odm_night</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
 
@@ -21,8 +23,6 @@
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
         <item name="android:windowBackground">@color/odm_night</item>
-        <item name="android:statusBarColor">@color/odm_night</item>
-        <item name="android:navigationBarColor">@color/odm_night</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
 

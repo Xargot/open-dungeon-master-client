@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
-import { app, ipcMain, nativeTheme, shell, type IpcMainInvokeEvent } from "electron";
+import path from "node:path";
+import { app, dialog, ipcMain, nativeTheme, shell, type IpcMainInvokeEvent, type OpenDialogOptions, type SaveDialogOptions } from "electron";
 import type {
   ServerProbe,
   AiSetup,
@@ -20,6 +22,7 @@ import {
   parseLinkOrAddress,
   codeCandidates,
   parseRoomCode,
+  insecureRemoteOrigin,
   trustedTunnelOrigin,
   type JoinLink,
 } from "../shared/deep-link";
@@ -52,7 +55,9 @@ import {
   tokenIsValid,
   type TokenGrant,
   whoAmI,
+  worldRequest,
 } from "./odm-api";
+import { commitWorldImport, discardWorldTransfer, exportFileName, runWorldJob } from "../shared/world-transfer";
 import { LOCAL_SERVER_ID, type ServerStore, type StoredServer } from "./servers";
 import { dropTables, ownedTableCodes, publishTables, resolveTable } from "./table-registry";
 import { refusedAfter } from "../shared/broker";
@@ -93,6 +98,9 @@ export interface ShellIpc {
   shutdownShare(): Promise<void>;
 }
 
+// The largest lore document the shell will fetch for the system viewer.
+const MAX_DOCUMENT_BYTES = 32 * 1024 * 1024;
+
 // Everything arriving over IPC is untrusted renderer input: coerce and cap.
 function str(value: unknown, max: number): string {
   return typeof value === "string" ? value.slice(0, max) : "";
@@ -129,6 +137,23 @@ function summaryOf(entry: StoredServer): ServerSummary {
 
 export function registerIpc(ctx: ShellContext): ShellIpc {
   const { store, window: win, local, tunnel, localAi, updater } = ctx;
+
+  // Privileged channels answer the shell's own pages only (audit S8). The
+  // view's channels (the way back to the server list, the share dialog)
+  // stay on ipcMain itself and check the page's origin where it matters.
+  const shellIpc = {
+    handle(channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void {
+      ipcMain.handle(channel, (event, ...args) => {
+        if (!win.isShellPage(event)) throw new Error("Refused.");
+        return listener(event, ...args);
+      });
+    },
+    on(channel: string, listener: Parameters<typeof ipcMain.on>[1]): void {
+      ipcMain.on(channel, (event, ...args) => {
+        if (win.isShellPage(event)) listener(event, ...args);
+      });
+    },
+  };
 
   const localHasAccount = (): boolean => store.token(LOCAL_SERVER_ID) !== null;
   const localStatus = (): LocalStatus =>
@@ -181,20 +206,54 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
   const refreshHomeFeed = (): void => {
     homeFeed.refresh().catch(() => undefined);
   };
-  ipcMain.handle("home:feed", () => homeFeed.refresh());
-  ipcMain.handle("home:feed-cached", () => homeFeed.cached());
+  shellIpc.handle("home:feed", () => homeFeed.refresh());
+  shellIpc.handle("home:feed-cached", () => homeFeed.cached());
   // A cover for the home screen, fetched with the host's own session and
   // only from that host (the renderer names the host; the url must belong
   // to it). "" for anything that cannot be had right now.
   // The native game screens' way onto a host's API: its address and the
   // live token. The token leaves the store only for the shell's own page.
-  ipcMain.handle("host:session", (_event, hostId: unknown) => {
+  shellIpc.handle("host:session", (_event, hostId: unknown) => {
     const id = str(hostId, 64);
     const origin = id === LOCAL_SERVER_ID ? localStatus().origin : (store.get(id)?.origin ?? "");
     const token = id ? store.token(id) : null;
     return origin && token ? { origin, token } : null;
   });
-  ipcMain.handle("home:cover", async (_event, hostId: unknown, url: unknown) => {
+  // A host document the game screens ask to open (a lore entry's PDF): the
+  // shell fetches it with the session of the host on screen and hands it to
+  // the system viewer. The page cannot do it itself: a link would open the
+  // system browser without the session, and the screens' own origin has no
+  // such file. Only a PDF the host stores for its players, size-capped.
+  const mountedHosts = new Map<number, string>();
+  shellIpc.on("game:mounted", (event, hostId: unknown) => {
+    mountedHosts.set(event.sender.id, str(hostId, 64));
+  });
+  shellIpc.handle("doc:open", async (event, docPath: unknown) => {
+    const target = str(docPath, 300);
+    if (!/^\/(uploads|generated)\/[A-Za-z0-9._/-]+\.pdf$/.test(target) || target.includes("..")) return false;
+    const id = mountedHosts.get(event.sender.id) ?? "";
+    const origin = id === LOCAL_SERVER_ID ? localStatus().origin : (store.get(id)?.origin ?? "");
+    const token = id ? store.token(id) : null;
+    if (!origin || !token) return false;
+    try {
+      const response = await fetch(`${origin}${target}`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(60_000),
+      });
+      const declared = Number(response.headers.get("content-length") ?? 0);
+      if (!response.ok || declared > MAX_DOCUMENT_BYTES) return false;
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length > MAX_DOCUMENT_BYTES || bytes.subarray(0, 5).toString("latin1") !== "%PDF-") return false;
+      const dir = path.join(app.getPath("temp"), "odm-documents");
+      await fs.promises.mkdir(dir, { recursive: true });
+      const file = path.join(dir, path.basename(target));
+      await fs.promises.writeFile(file, bytes);
+      return (await shell.openPath(file)) === "";
+    } catch {
+      return false;
+    }
+  });
+  shellIpc.handle("home:cover", async (_event, hostId: unknown, url: unknown) => {
     const id = str(hostId, 64);
     const origin = id === LOCAL_SERVER_ID ? localStatus().origin : (store.get(id)?.origin ?? "");
     const target = coverRequestUrl(origin, str(url, 700));
@@ -320,7 +379,14 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     const origin = local.origin;
     if (!origin) return false;
     const partition = partitionFor(entry.id);
-    await applyPortalCookies(partition, origin, entry.origin, token, entry.tokenExpiresAt);
+    await applyPortalCookies(
+      partition,
+      origin,
+      entry.origin,
+      token,
+      entry.tokenExpiresAt,
+      local.portalSignature(entry.origin, token),
+    );
     win.attachView(origin, partition, pathname, entry.origin);
     return true;
   };
@@ -345,8 +411,12 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     win.attachView(entry.origin, partitionFor(entry.id), pathname);
   };
 
-  ipcMain.handle("prefs:portal", () => store.portal());
-  ipcMain.handle("prefs:set-portal", (_event, on: unknown) => {
+  shellIpc.handle("prefs:credentials", () => store.credentialStorage());
+  shellIpc.handle("prefs:set-keep-sign-ins", (_event, keep: unknown) => {
+    store.setKeepSignIns(keep !== false);
+  });
+  shellIpc.handle("prefs:portal", () => store.portal());
+  shellIpc.handle("prefs:set-portal", (_event, on: unknown) => {
     store.setPortal(on !== false);
   });
 
@@ -364,12 +434,12 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     };
   };
   const storyMemoryHere = storyMemorySupported(process.platform, process.arch);
-  ipcMain.handle("prefs:story-memory", () => (storyMemoryHere ? storyMemoryStatus() : null));
-  ipcMain.handle("prefs:set-story-memory", (_event, raw: unknown) => {
+  shellIpc.handle("prefs:story-memory", () => (storyMemoryHere ? storyMemoryStatus() : null));
+  shellIpc.handle("prefs:set-story-memory", (_event, raw: unknown) => {
     if (storyMemoryHere) store.setStoryMemory(parseStoryMemory(raw));
     return storyMemoryStatus();
   });
-  ipcMain.handle("prefs:apply-story-memory", async () => {
+  shellIpc.handle("prefs:apply-story-memory", async () => {
     try {
       if (storyMemoryHere && storyMemoryStatus().pendingRestart) await local.restart();
       return { ok: true, status: storyMemoryStatus() };
@@ -502,7 +572,8 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
       try {
         const probe = await probeServer(link.origin);
         const match = store.findByInstanceId(probe.instanceId);
-        if (match) {
+        // Never from https to plain http on the open internet.
+        if (match && !(match.origin.startsWith("https:") && insecureRemoteOrigin(link.origin))) {
           const trusted =
             trustedTunnelOrigin(link.origin) ||
             (!!link.code && (await resolveTable(link.code)) === link.origin);
@@ -530,7 +601,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
   // screen, behave exactly like a clicked deep link or a scan: a server the
   // shell already has opens with its saved session rather than being added
   // a second time.
-  ipcMain.handle("servers:open-invite", async (_event, raw: unknown) => {
+  shellIpc.handle("servers:open-invite", async (_event, raw: unknown) => {
     const text = str(raw, 700);
     // A room code is a campaign's own code and names no address, so the
     // registry is asked where that table is right now. This is the whole
@@ -580,7 +651,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     return true;
   });
 
-  ipcMain.handle("servers:list", () => ({
+  shellIpc.handle("servers:list", () => ({
     servers: store.summaries(),
     local: localStatus(),
     tunnel: tunnel.status(),
@@ -613,9 +684,9 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   };
 
-  ipcMain.handle("share:start", () => startSharing());
+  shellIpc.handle("share:start", () => startSharing());
 
-  ipcMain.handle("share:stop", async () => {
+  shellIpc.handle("share:stop", async () => {
     await tunnel.stop();
     await syncPublicUrl();
     return { ok: true, tunnel: tunnel.status() };
@@ -639,8 +710,8 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
       return fail(err);
     }
   };
-  ipcMain.handle("share:lan-start", () => setLanSharing(true));
-  ipcMain.handle("share:lan-stop", () => setLanSharing(false));
+  shellIpc.handle("share:lan-start", () => setLanSharing(true));
+  shellIpc.handle("share:lan-stop", () => setLanSharing(false));
 
   // The same switch for the game page's preload (src/preload/game.ts), only
   // honored while the page on top is the local world itself: a remote
@@ -685,7 +756,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     return shellShareStatus();
   });
 
-  ipcMain.handle("servers:probe", async (_event, raw: unknown) => {
+  shellIpc.handle("servers:probe", async (_event, raw: unknown) => {
     let lastError: unknown = null;
     for (const origin of originCandidates(str(raw, 300))) {
       try {
@@ -697,7 +768,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     return fail(lastError ?? new Error("That does not look like a server address."));
   });
 
-  ipcMain.handle("servers:login", async (_event, input: Record<string, unknown>) => {
+  shellIpc.handle("servers:login", async (_event, input: Record<string, unknown>) => {
     try {
       const origin = normalizeOrigin(str(input?.origin, 300));
       if (!origin) return fail(new Error("Bad server address."));
@@ -708,7 +779,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   });
 
-  ipcMain.handle("servers:register", async (_event, input: Record<string, unknown>) => {
+  shellIpc.handle("servers:register", async (_event, input: Record<string, unknown>) => {
     try {
       const origin = normalizeOrigin(str(input?.origin, 300));
       if (!origin) return fail(new Error("Bad server address."));
@@ -743,7 +814,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
 
   // Discord sign-in runs in the window as a throwaway in-memory partition;
   // the harvested session then takes the same road as a password login.
-  ipcMain.handle("servers:discord-login", async (_event, input: Record<string, unknown>) => {
+  shellIpc.handle("servers:discord-login", async (_event, input: Record<string, unknown>) => {
     const partition = "odm-login";
     try {
       const origin = normalizeOrigin(str(input?.origin, 300));
@@ -767,14 +838,14 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   });
 
-  ipcMain.handle("servers:connect", (_event, id: unknown, joinCode: unknown, path: unknown) =>
+  shellIpc.handle("servers:connect", (_event, id: unknown, joinCode: unknown, path: unknown) =>
     connectRemote(str(id, 64), joinCodeOf(joinCode), safeInnerPath(path)),
   );
 
   // The account is gone (or going) on the server side, so the session it
   // minted is dropped here too; the entry stays listed so "Sign in" before
   // the due date can still keep it, and Forget removes it like any other.
-  ipcMain.handle("servers:delete-account", async (_event, input: Record<string, unknown>) => {
+  shellIpc.handle("servers:delete-account", async (_event, input: Record<string, unknown>) => {
     const serverId = str(input?.serverId, 64);
     if (!serverId || serverId === LOCAL_SERVER_ID) return fail(new Error("Unknown server."));
     const entry = store.get(serverId);
@@ -792,14 +863,14 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   });
 
-  ipcMain.handle("servers:remove", async (_event, id: unknown) => {
+  shellIpc.handle("servers:remove", async (_event, id: unknown) => {
     const serverId = str(id, 64);
     if (!serverId || serverId === LOCAL_SERVER_ID) return;
     store.remove(serverId);
     await clearPartition(partitionFor(serverId));
   });
 
-  ipcMain.handle("local:start", async () => {
+  shellIpc.handle("local:start", async () => {
     try {
       await local.start();
       return { ok: true, status: localStatus() };
@@ -843,7 +914,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     return grant;
   };
 
-  ipcMain.handle("local:create-account", async (_event, input: Record<string, unknown>) => {
+  shellIpc.handle("local:create-account", async (_event, input: Record<string, unknown>) => {
     try {
       await local.start();
       const grant = await registerAccount(local.origin, {
@@ -860,7 +931,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   });
 
-  ipcMain.handle("local:login", async (_event, input: Record<string, unknown>) => {
+  shellIpc.handle("local:login", async (_event, input: Record<string, unknown>) => {
     try {
       await local.start();
       const grant = await loginForToken(
@@ -875,7 +946,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   });
 
-  ipcMain.handle("local:configure-ai", async (_event, setup: AiSetup) => {
+  shellIpc.handle("local:configure-ai", async (_event, setup: AiSetup) => {
     try {
       const token = store.token(LOCAL_SERVER_ID);
       if (!token || !local.origin) return fail(new Error("Set up the local account first."));
@@ -917,7 +988,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
   // them (it is the server that will start them, with the PATH and sandbox it
   // actually has, so the shell does no looking of its own). Starts the world
   // if it is not running yet.
-  ipcMain.handle("local:harness-status", async (_event, refresh: unknown): Promise<HarnessStatusResult> => {
+  shellIpc.handle("local:harness-status", async (_event, refresh: unknown): Promise<HarnessStatusResult> => {
     try {
       if (!local.origin) await local.start();
       const token = store.token(LOCAL_SERVER_ID);
@@ -954,18 +1025,134 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
       return fail(err);
     }
   };
-  ipcMain.handle("local:speech-status", () => speech(false));
-  ipcMain.handle("local:speech-install", () => speech(true));
+  shellIpc.handle("local:speech-status", () => speech(false));
+  shellIpc.handle("local:speech-install", () => speech(true));
+
+  // Moving the device world (src/shared/world-transfer.ts). The world's own
+  // server packs and checks the archive in its world-transfer folder; the
+  // shell only moves the file between there and where the person keeps it.
+  // The world awake and a live session for its owner: the stored token, or
+  // a fresh one from the profile password the app keeps.
+  // A world nobody has entered yet gets its owner profile first, as
+  // local:play makes it, so a new computer can take in a world straight
+  // away; the import replaces it anyway.
+  const localSession = async (): Promise<string> => {
+    const fresh = local.status(localHasAccount()).firstRun;
+    await local.start();
+    const token = store.token(LOCAL_SERVER_ID);
+    if (token && (await tokenIsValid(local.origin, token))) return token;
+    const entry = store.get(LOCAL_SERVER_ID);
+    const secret = store.secret(LOCAL_SERVER_ID);
+    if (!entry && fresh) return (await provisionLocalProfile()).token;
+    if (!entry || !secret) throw new Error("Enter your world from the home screen first, then try again.");
+    const grant = await loginForToken(local.origin, entry.username, secret);
+    adoptLocalGrant(grant, secret);
+    return grant.token;
+  };
+  const transferPhase = (phase: string) => win.sendEvent({ kind: "world-transfer", phase });
+  const saveDialog = (options: SaveDialogOptions) => {
+    const parent = win.dialogParent();
+    return parent ? dialog.showSaveDialog(parent, options) : dialog.showSaveDialog(options);
+  };
+  const openDialog = (options: OpenDialogOptions) => {
+    const parent = win.dialogParent();
+    return parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options);
+  };
+  const ARCHIVE_FILTERS = [
+    { name: "World archive", extensions: ["gz"] },
+    { name: "All files", extensions: ["*"] },
+  ];
+  // The checked archive waiting for the person's yes.
+  let pendingImport = "";
+
+  shellIpc.handle("local:export-world", async () => {
+    try {
+      const token = await localSession();
+      const request = worldRequest(local.origin, token);
+      const job = await runWorldJob(request, { action: "export" }, transferPhase);
+      if (!job.export) throw new Error("The world was packed, but the file is missing.");
+      const choice = await saveDialog({
+        title: "Save your world",
+        defaultPath: path.join(app.getPath("documents"), exportFileName(job.export)),
+        filters: ARCHIVE_FILTERS,
+      });
+      if (choice.canceled || !choice.filePath) {
+        await discardWorldTransfer(request);
+        return { ok: true, saved: false, file: "", bytes: 0 };
+      }
+      transferPhase("Saving");
+      await fs.promises.copyFile(path.join(local.transferDir, job.export.name), choice.filePath);
+      await discardWorldTransfer(request);
+      return { ok: true, saved: true, file: choice.filePath, bytes: job.export.bytes };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  shellIpc.handle("local:import-pick", async () => {
+    try {
+      const choice = await openDialog({ title: "Import a world", properties: ["openFile"], filters: ARCHIVE_FILTERS });
+      if (choice.canceled || !choice.filePaths[0]) return { ok: true, preview: null };
+      const token = await localSession();
+      const request = worldRequest(local.origin, token);
+      await discardWorldTransfer(request);
+      pendingImport = "";
+      const name = `import-${randomBytes(8).toString("hex")}.tar.gz`;
+      await fs.promises.mkdir(local.transferDir, { recursive: true });
+      transferPhase("Copying the file");
+      await fs.promises.copyFile(choice.filePaths[0], path.join(local.transferDir, name));
+      try {
+        const job = await runWorldJob(request, { action: "check", name }, transferPhase);
+        pendingImport = name;
+        return { ok: true, preview: job.preview };
+      } catch (err) {
+        await discardWorldTransfer(request);
+        throw err;
+      }
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  // Swaps the checked world in, then restarts it and signs its owner in
+  // with a password the app makes and keeps, the way a new world's profile
+  // is made: the archive never carries one.
+  shellIpc.handle("local:import-commit", async () => {
+    try {
+      if (!pendingImport) throw new Error("Pick a world file first.");
+      const secret = randomBytes(24).toString("base64url");
+      const token = await localSession();
+      transferPhase("Swapping your world in");
+      const { owner } = await commitWorldImport(worldRequest(local.origin, token), pendingImport, secret);
+      pendingImport = "";
+      transferPhase("Restarting your world");
+      await local.restart();
+      // The pages of the world it replaced (their session, their storage)
+      // belong to that world.
+      await clearPartition(partitionFor(LOCAL_SERVER_ID));
+      adoptLocalGrant(await loginForToken(local.origin, owner, secret), secret);
+      win.sendEvent({ kind: "local-status", status: localStatus() });
+      return { ok: true, owner };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  shellIpc.handle("local:import-cancel", async () => {
+    pendingImport = "";
+    const token = store.token(LOCAL_SERVER_ID);
+    if (token && local.origin) await discardWorldTransfer(worldRequest(local.origin, token));
+  });
 
   // What the OpenAI form shows as already saved on this device. Never
   // throws: a world that is not up yet simply has nothing saved to show.
-  ipcMain.handle("local:ai-saved", async () => {
+  shellIpc.handle("local:ai-saved", async () => {
     const token = store.token(LOCAL_SERVER_ID);
     if (!token || !local.origin) return NO_SAVED_AI;
     return savedAiFrom(await getAdminSettings(local.origin, token).catch(() => null));
   });
 
-  ipcMain.handle("local:play", async (_event, joinCode: unknown, path: unknown): Promise<ConnectResult> => {
+  shellIpc.handle("local:play", async (_event, joinCode: unknown, path: unknown): Promise<ConnectResult> => {
     // Read before start(): booting the server creates the database, which is
     // the "has this world ever existed" signal.
     const freshWorld = local.status(localHasAccount()).firstRun;
@@ -1028,18 +1215,18 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     return { ok: true };
   });
 
-  ipcMain.handle("local-ai:status", () => localAi.status());
+  shellIpc.handle("local-ai:status", () => localAi.status());
 
   // The Steam Deck layout: the switch saves the choice and redraws at once;
   // the window itself (full screen in Game Mode) follows on the next start.
   let deck = ctx.deck;
-  ipcMain.handle("app:info", () => ({
+  shellIpc.handle("app:info", () => ({
     version: app.getVersion(),
     installKind: updater.kind,
     update: updater.lastFound(),
     deck,
   }));
-  ipcMain.handle("deck:set-choice", (_event, raw: unknown) => {
+  shellIpc.handle("deck:set-choice", (_event, raw: unknown) => {
     if (!deck) return undefined;
     const choice = parseDeckChoice(raw);
     store.setDeckChoice(choice);
@@ -1049,7 +1236,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
   // Steam's keyboard comes and goes through its own deep links, the way SDL
   // asks for it on a Deck. Off Steam there is nobody to answer them, and
   // opening one would start Steam, so nothing is sent.
-  ipcMain.handle("deck:keyboard", async (_event, open: unknown, field: unknown, multiline: unknown) => {
+  shellIpc.handle("deck:keyboard", async (_event, open: unknown, field: unknown, multiline: unknown) => {
     if (!deck?.steam) return;
     const url =
       open === true ? steamKeyboardUrl(win.screenRect(fieldOf(field)), multiline === true) : STEAM_KEYBOARD_CLOSE;
@@ -1058,15 +1245,15 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
 
   // The screens' theme (docs/vtt-parity-implementation-plan.md 18.2, phase
   // 29): the OS frame follows the parchment or the night.
-  ipcMain.handle("theme:set", (_event, mode: unknown) => {
+  shellIpc.handle("theme:set", (_event, mode: unknown) => {
     nativeTheme.themeSource = mode === "light" ? "light" : "dark";
   });
   // The table view on a second display (phase 28).
-  ipcMain.handle("table:open", (_event, hostId: unknown, campaignId: unknown) =>
+  shellIpc.handle("table:open", (_event, hostId: unknown, campaignId: unknown) =>
     win.openTableScreen(String(hostId ?? ""), String(campaignId ?? "")),
   );
 
-  ipcMain.handle("update:check", async () => {
+  shellIpc.handle("update:check", async () => {
     try {
       return { ok: true, update: await updater.checkForUpdates() };
     } catch (err) {
@@ -1074,7 +1261,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   });
 
-  ipcMain.handle("update:install", async () => {
+  shellIpc.handle("update:install", async () => {
     try {
       await updater.downloadAndInstall();
       return { ok: true };
@@ -1083,7 +1270,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   });
 
-  ipcMain.handle("local-ai:scan", async () => {
+  shellIpc.handle("local-ai:scan", async () => {
     try {
       const result = await localAi.scan();
       return { ok: true, ...result };
@@ -1092,7 +1279,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   });
 
-  ipcMain.handle("local-ai:install", async (_event, tierId: unknown) => {
+  shellIpc.handle("local-ai:install", async (_event, tierId: unknown) => {
     try {
       await localAi.install(str(tierId, 40));
       // Point the local world's AI at the freshly installed aliases;
@@ -1111,7 +1298,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   });
 
-  ipcMain.handle("local-ai:install-comfy", async () => {
+  shellIpc.handle("local-ai:install-comfy", async () => {
     try {
       await localAi.installComfy();
       const token = store.token(LOCAL_SERVER_ID);
@@ -1131,7 +1318,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   });
 
-  ipcMain.handle("local-ai:uninstall", async (_event, component: unknown) => {
+  shellIpc.handle("local-ai:uninstall", async (_event, component: unknown) => {
     try {
       if (str(component, 10) === "images") await localAi.uninstallComfy();
       else await localAi.uninstallText();

@@ -3,7 +3,13 @@
 <full-backup-content>
     <exclude domain="file" path="data" />
     <exclude domain="file" path="server" />
+    <exclude domain="file" path="server.new" />
+    <exclude domain="file" path="server.old" />
     <exclude domain="file" path="server.keep" />
     <exclude domain="file" path="local-server.log" />
+    <exclude domain="file" path="local-server.log.1" />
+    <exclude domain="file" path="tunnel.log" />
+    <exclude domain="file" path="tunnel.log.1" />
     <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="odm_secrets.xml" />
 </full-backup-content>

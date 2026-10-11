@@ -27,7 +27,7 @@ function scratch() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "odm-run-tree-"));
 }
 
-test("a staged payload becomes a runnable server tree in user data", () => {
+test("a staged payload becomes a runnable server tree in user data", async () => {
   const dir = scratch();
   const payload = path.join(dir, "payload");
   const renderer = path.join(dir, "renderer");
@@ -54,7 +54,7 @@ test("a staged payload becomes a runnable server tree in user data", () => {
     "game/public/fx/loop.webp": "fx",
   });
   try {
-    materializeRunTree(payload, run, renderer);
+    await materializeRunTree(payload, run, renderer);
     assert.ok(fs.existsSync(path.join(run, "node_modules/next/package.json")));
     assert.ok(fs.existsSync(path.join(run, "node_modules/next/node_modules/@img/sharp/index.js")));
     assert.ok(!fs.existsSync(path.join(run, MODULES_DIR)));
@@ -68,6 +68,9 @@ test("a staged payload becomes a runnable server tree in user data", () => {
     assert.equal(fs.readFileSync(path.join(run, "public/fx/loop.webp"), "utf8"), "fx");
     assert.ok(!fs.existsSync(path.join(run, "public/fx/missing.webp")));
     assert.equal(fs.readFileSync(path.join(run, "public/icon-512.png"), "utf8"), "png");
+    // The marker arrives last, whole.
+    assert.equal(fs.readFileSync(path.join(run, "odm-payload.json"), "utf8"), "{}");
+    assert.ok(!fs.existsSync(path.join(run, "odm-payload.json.part")));
     // The staged payload itself is untouched.
     assert.ok(fs.existsSync(path.join(payload, `${MODULES_DIR}/next/package.json`)));
   } finally {
@@ -75,18 +78,18 @@ test("a staged payload becomes a runnable server tree in user data", () => {
   }
 });
 
-test("a payload in the plain layout (a dev checkout's vendor/server) passes through unchanged", () => {
+test("a payload in the plain layout (a dev checkout's vendor/server) passes through unchanged", async () => {
   const dir = scratch();
   const payload = path.join(dir, "payload");
   const run = path.join(dir, "run");
   stage(payload, { "server.js": "x", "node_modules/next/package.json": "{}", "public/fx/loop.webp": "fx" });
   try {
-    materializeRunTree(payload, run, path.join(dir, "no-renderer"));
+    await materializeRunTree(payload, run, path.join(dir, "no-renderer"));
     assert.ok(fs.existsSync(path.join(run, "node_modules/next/package.json")));
     assert.equal(fs.readFileSync(path.join(run, "public/fx/loop.webp"), "utf8"), "fx");
     assert.equal(restoreModuleDirs(run), 0);
     assert.equal(linkModuleAliases(run), 0);
-    assert.equal(restoreLocalAssets(run, path.join(dir, "no-renderer")), 0);
+    assert.equal(await restoreLocalAssets(run, path.join(dir, "no-renderer")), 0);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

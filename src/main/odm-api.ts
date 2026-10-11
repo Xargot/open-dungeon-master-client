@@ -1,4 +1,5 @@
 import type { AccountDeletionResult, ServerProbe, SignupMode } from "../shared/types";
+import type { WorldRequest } from "../shared/world-transfer";
 
 // Thin fetch helpers for talking to an Open Dungeon Master server's REST API
 // from the main process. Errors are thrown as ApiError with a message safe to
@@ -228,5 +229,21 @@ export async function deleteAccount(
     dueAt: typeof body?.dueAt === "string" ? body.dueAt : "",
     graceDays: typeof body?.graceDays === "number" ? body.graceDays : 0,
     purged: body?.purged === true,
+  };
+}
+
+// The device world's archive route (src/shared/world-transfer.ts), as the
+// shared job runner calls it: status and body, never a throw on a refusal.
+export function worldRequest(origin: string, token: string): WorldRequest {
+  return async (method, body) => {
+    const res = await api(origin, "/api/admin/world", {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...(body ? { "content-type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    return { status: res.status, data: await res.json().catch(() => null) };
   };
 }

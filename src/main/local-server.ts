@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -7,6 +7,8 @@ import path from "node:path";
 import { lanOrigin } from "../shared/lan";
 import type { LocalStatus } from "../shared/types";
 import { materializeRunTree } from "./run-tree";
+import { openLog } from "./log-files";
+import { PayloadStore } from "./payload-store";
 
 // Runs the bundled Open Dungeon Master server (a Next.js standalone build
 // produced by scripts/bundle-server.mjs) as a child process on localhost,
@@ -100,6 +102,11 @@ export class LocalServer {
   private get dbPath(): string {
     return path.join(this.dataDir, "odm.sqlite");
   }
+  // Where the world's server stages a world archive it packs or checks
+  // (its src/lib/ops/world-archive.ts): beside the database.
+  get transferDir(): string {
+    return path.join(this.dataDir, "world-transfer");
+  }
   get origin(): string {
     return this.port ? `http://127.0.0.1:${this.port}` : "";
   }
@@ -152,25 +159,17 @@ export class LocalServer {
   // location can be read-only (AppImage mounts are), and the server writes
   // uploads and generated art next to its own public/ directory, so it has
   // to run from user data. Preserved directories survive upgrades.
-  private syncRunTree(): void {
+  // Brings the run tree up to this build's payload (payload-store.ts): any
+  // upgrade an earlier run left half done is finished or unwound first,
+  // every time, so a matching build stamp never hides an interrupted one.
+  private async syncRunTree(): Promise<void> {
     const fresh = readPayloadInfo(this.payloadDir);
     if (!fresh) throw new Error("This build has no bundled server payload.");
+    const store = new PayloadStore(this.runDir, PRESERVED);
+    await store.recover();
     const current = readPayloadInfo(this.runDir);
     if (current && current.builtAt === fresh.builtAt) return;
-    const keep = `${this.runDir}.keep`;
-    fs.rmSync(keep, { recursive: true, force: true });
-    if (current) {
-      for (const rel of PRESERVED) {
-        const from = path.join(this.runDir, rel);
-        if (fs.existsSync(from)) fs.cpSync(from, path.join(keep, rel), { recursive: true });
-      }
-    }
-    fs.rmSync(this.runDir, { recursive: true, force: true });
-    materializeRunTree(this.payloadDir, this.runDir, this.rendererDir);
-    if (fs.existsSync(keep)) {
-      fs.cpSync(keep, this.runDir, { recursive: true, force: true });
-      fs.rmSync(keep, { recursive: true, force: true });
-    }
+    await store.upgrade((dir) => materializeRunTree(this.payloadDir, dir, this.rendererDir));
   }
 
   private get bindHost(): string {
@@ -248,13 +247,38 @@ export class LocalServer {
     return key;
   }
 
+  // The key the portal cookies are signed with (the server's src/lib/portal.ts
+  // honours them only with a matching signature). Minted once and kept beside
+  // the database key, so a portal view the window already holds stays valid
+  // across restarts of the world.
+  private portalSecret(): string {
+    const keyFile = path.join(this.dataDir, "portal-key");
+    try {
+      const existing = fs.readFileSync(keyFile, "utf8").trim();
+      if (existing.length >= 32) return existing;
+    } catch {
+      // First run.
+    }
+    const secret = randomBytes(32).toString("base64url");
+    fs.mkdirSync(this.dataDir, { recursive: true });
+    fs.writeFileSync(keyFile, secret, { mode: 0o600 });
+    return secret;
+  }
+
+  // What the shell plants beside the portal cookies for `hostOrigin` and
+  // `token`: the same HMAC the server checks, over the origin as the server
+  // normalizes it.
+  portalSignature(hostOrigin: string, token: string): string {
+    return createHmac("sha256", this.portalSecret()).update(`${new URL(hostOrigin).origin}\n${token}`).digest("base64url");
+  }
+
   private async doStart(): Promise<void> {
     this.setState("starting");
     try {
-      this.syncRunTree();
+      await this.syncRunTree();
       fs.mkdirSync(this.dataDir, { recursive: true });
       this.port = await this.pickPort();
-      const log = fs.openSync(path.join(this.userDataDir, "local-server.log"), "a");
+      const log = openLog(path.join(this.userDataDir, "local-server.log"));
       const extra = this.extraEnv();
       this.startedEnv = extra;
       const child = spawn(process.execPath, [path.join(this.runDir, "server.js")], {
@@ -276,6 +300,7 @@ export class LocalServer {
           // hides what the shell manages (address, sign-ups, voice, Discord).
           ODM_DEVICE_WORLD: "1",
           ODM_SETUP_CODE: this.setupCode,
+          ODM_PORTAL_SECRET: this.portalSecret(),
           // The server refuses uploads once the disk would drop below 1 GB
           // free, sized for a server's volume. This disk is the owner's own,
           // so the floor here is only what keeps the database writable; a

@@ -1,0 +1,261 @@
+diff --git a/node_modules/@capgo/inappbrowser/android/src/main/java/ee/forgr/capacitor_inappbrowser/SystemUiChromeSupport.java b/node_modules/@capgo/inappbrowser/android/src/main/java/ee/forgr/capacitor_inappbrowser/SystemUiChromeSupport.java
+new file mode 100644
+index 0000000..6f420f4
+--- /dev/null
++++ b/node_modules/@capgo/inappbrowser/android/src/main/java/ee/forgr/capacitor_inappbrowser/SystemUiChromeSupport.java
+@@ -0,0 +1,111 @@
++package ee.forgr.capacitor_inappbrowser;
++
++import android.graphics.Color;
++import android.os.Build;
++import android.view.View;
++import android.view.Window;
++import android.view.WindowManager;
++import androidx.core.view.WindowCompat;
++import androidx.core.view.WindowInsetsControllerCompat;
++
++/**
++ * Centralizes window chrome decisions so WebViewDialog can avoid deprecated system UI APIs on
++ * Android 15+ while keeping API 24–34 behavior unchanged.
++ */
++final class SystemUiChromeSupport {
++
++    static final int EDGE_TO_EDGE_SDK = Build.VERSION_CODES.VANILLA_ICE_CREAM;
++
++    private SystemUiChromeSupport() {}
++
++    static boolean requiresEdgeToEdgeChrome(int sdkInt) {
++        return sdkInt >= EDGE_TO_EDGE_SDK;
++    }
++
++    static boolean shouldApplyLegacySystemBarColors(int sdkInt) {
++        return sdkInt < EDGE_TO_EDGE_SDK;
++    }
++
++    static boolean shouldUsePreApi30LayoutFlags(int sdkInt) {
++        return sdkInt < Build.VERSION_CODES.R;
++    }
++
++    static boolean usesLayoutBehindNavigationBar(int sdkInt, boolean edgeToEdge) {
++        return !edgeToEdge && shouldUsePreApi30LayoutFlags(sdkInt);
++    }
++
++    /**
++     * Color painted behind the browser content, visible in the system bar insets. Follows the toolbar
++     * color when one is set, otherwise the system theme, so the dialog theme's default never shows.
++     */
++    static int resolveWindowBackgroundColor(Integer toolbarColor, boolean darkTheme) {
++        if (toolbarColor != null) {
++            return toolbarColor;
++        }
++        return darkTheme ? Color.BLACK : Color.WHITE;
++    }
++
++    static void setDecorFitsSystemWindows(Window window, boolean decorFitsSystemWindows) {
++        if (window == null) {
++            return;
++        }
++        WindowCompat.setDecorFitsSystemWindows(window, decorFitsSystemWindows);
++    }
++
++    static void prepareInitialDialogWindow(Window window, View statusBarColorView) {
++        if (window == null) {
++            return;
++        }
++
++        window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
++        if (shouldApplyLegacySystemBarColors(Build.VERSION.SDK_INT)) {
++            applyLegacyStatusBarColorViaView(statusBarColorView, Color.TRANSPARENT);
++            clearLegacyTranslucentStatusFlag(window);
++        }
++    }
++
++    static void applyDialogWindowChrome(
++        Window window,
++        View decorView,
++        View statusBarColorView,
++        boolean edgeToEdge,
++        Integer statusBarColor,
++        Boolean lightStatusBars
++    ) {
++        if (window == null || decorView == null) {
++            return;
++        }
++
++        if (edgeToEdge) {
++            setDecorFitsSystemWindows(window, false);
++        } else if (!shouldUsePreApi30LayoutFlags(Build.VERSION.SDK_INT)) {
++            setDecorFitsSystemWindows(window, true);
++            applyLegacyStatusBarColorViaView(statusBarColorView, statusBarColor);
++        } else {
++            setDecorFitsSystemWindows(window, false);
++            applyLegacyStatusBarColorViaView(statusBarColorView, statusBarColor);
++        }
++
++        WindowInsetsControllerCompat controller = new WindowInsetsControllerCompat(window, decorView);
++        if (lightStatusBars != null) {
++            controller.setAppearanceLightStatusBars(lightStatusBars);
++        }
++    }
++
++    static void applyLegacyStatusBarColorViaView(View statusBarColorView, Integer statusBarColor) {
++        if (!shouldApplyLegacySystemBarColors(Build.VERSION.SDK_INT)) {
++            return;
++        }
++
++        if (statusBarColor != null && statusBarColorView != null) {
++            statusBarColorView.setBackgroundColor(statusBarColor);
++        }
++    }
++
++    @SuppressWarnings("deprecation")
++    private static void clearLegacyTranslucentStatusFlag(Window window) {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
++            window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
++        }
++    }
++}
+diff --git a/node_modules/@capgo/inappbrowser/android/src/main/java/ee/forgr/capacitor_inappbrowser/WebViewDialog.java b/node_modules/@capgo/inappbrowser/android/src/main/java/ee/forgr/capacitor_inappbrowser/WebViewDialog.java
+index d5fc37a..406bea5 100644
+--- a/node_modules/@capgo/inappbrowser/android/src/main/java/ee/forgr/capacitor_inappbrowser/WebViewDialog.java
++++ b/node_modules/@capgo/inappbrowser/android/src/main/java/ee/forgr/capacitor_inappbrowser/WebViewDialog.java
+@@ -290,16 +290,10 @@ public class WebViewDialog extends Dialog {
+ 
+         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+ 
+-        // Make status bar transparent
+-        if (getWindow() != null) {
+-            getWindow().setStatusBarColor(Color.TRANSPARENT);
+-
+-            // Add FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS flag to the window
+-            getWindow().addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+-
+-            // On Android 30+ clear FLAG_TRANSLUCENT_STATUS flag
+-            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
+-        }
++        // The window draws the system bar backgrounds itself; the status bar
++        // color is painted by status_bar_color_view, never through the Window
++        // color setters Android 15 deprecated (see SystemUiChromeSupport).
++        SystemUiChromeSupport.prepareInitialDialogWindow(getWindow(), findViewById(R.id.status_bar_color_view));
+ 
+         WindowInsetsControllerCompat insetsController = new WindowInsetsControllerCompat(
+             getWindow(),
+@@ -899,7 +893,7 @@ public class WebViewDialog extends Dialog {
+         }
+ 
+         // Check if we need Android 15+ specific fixes
+-        boolean isAndroid15Plus = Build.VERSION.SDK_INT >= 35;
++        boolean isAndroid15Plus = SystemUiChromeSupport.requiresEdgeToEdgeChrome(Build.VERSION.SDK_INT);
+ 
+         // Get parent view
+         ViewGroup parent = (ViewGroup) _webView.getParent();
+@@ -1011,71 +1005,62 @@ public class WebViewDialog extends Dialog {
+             return WindowInsetsCompat.CONSUMED;
+         });
+ 
+-        // Handle window decoration - version-specific handling
++        // Handle window decoration - version-specific handling, without the
++        // Window color setters and setDecorFitsSystemWindows that Android 15
++        // deprecated (backported from upstream 8.x's SystemUiChromeSupport)
+         if (getWindow() != null) {
+-            if (isAndroid15Plus) {
+-                // Android 15+: Use edge-to-edge with proper insets handling
+-                getWindow().setDecorFitsSystemWindows(false);
+-                getWindow().setStatusBarColor(Color.TRANSPARENT);
+-                getWindow().setNavigationBarColor(Color.TRANSPARENT);
+-
+-                WindowInsetsControllerCompat controller = new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
++            View decorView = getWindow().getDecorView();
++            Integer statusBarColor = null;
++            Boolean lightStatusBars = null;
+ 
+-                // Set status bar text color
++            if (isAndroid15Plus) {
++                // Android 15+: edge-to-edge, the system keeps the bars transparent
+                 if (_options.getToolbarColor() != null && !_options.getToolbarColor().isEmpty()) {
+                     try {
+                         int backgroundColor = Color.parseColor(_options.getToolbarColor());
+-                        boolean isDarkBackground = isDarkColor(backgroundColor);
+-                        controller.setAppearanceLightStatusBars(!isDarkBackground);
++                        lightStatusBars = !isDarkColor(backgroundColor);
+                     } catch (IllegalArgumentException e) {
+                         // Ignore color parsing errors
+                     }
+                 }
+             } else if (Build.VERSION.SDK_INT >= 30) {
+-                // Android 11-14: Keep navigation bar transparent but respect status bar
+-                getWindow().setNavigationBarColor(Color.TRANSPARENT);
+-
+-                WindowInsetsControllerCompat controller = new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
+-
+-                // Set status bar color to match toolbar or use system default
++                // Android 11-14: status bar color matches the toolbar or the system theme
+                 if (_options.getToolbarColor() != null && !_options.getToolbarColor().isEmpty()) {
+                     try {
+                         int toolbarColor = Color.parseColor(_options.getToolbarColor());
+-                        getWindow().setStatusBarColor(toolbarColor);
+-                        boolean isDarkBackground = isDarkColor(toolbarColor);
+-                        controller.setAppearanceLightStatusBars(!isDarkBackground);
++                        statusBarColor = toolbarColor;
++                        lightStatusBars = !isDarkColor(toolbarColor);
+                     } catch (IllegalArgumentException e) {
+                         // Follow system theme if color parsing fails
+                         boolean isDarkTheme = isDarkThemeEnabled();
+-                        int statusBarColor = isDarkTheme ? Color.BLACK : Color.WHITE;
+-                        getWindow().setStatusBarColor(statusBarColor);
+-                        controller.setAppearanceLightStatusBars(!isDarkTheme);
++                        statusBarColor = isDarkTheme ? Color.BLACK : Color.WHITE;
++                        lightStatusBars = !isDarkTheme;
+                     }
+                 } else {
+                     // Follow system theme if no toolbar color provided
+                     boolean isDarkTheme = isDarkThemeEnabled();
+-                    int statusBarColor = isDarkTheme ? Color.BLACK : Color.WHITE;
+-                    getWindow().setStatusBarColor(statusBarColor);
+-                    controller.setAppearanceLightStatusBars(!isDarkTheme);
++                    statusBarColor = isDarkTheme ? Color.BLACK : Color.WHITE;
++                    lightStatusBars = !isDarkTheme;
+                 }
+             } else {
+-                // Pre-Android 11: Use deprecated flags for edge-to-edge navigation bar only
+-                getWindow()
+-                    .getDecorView()
+-                    .setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+-
+-                getWindow().setNavigationBarColor(Color.TRANSPARENT);
+-
+-                // Set status bar color to match toolbar
++                // Pre-Android 11: status bar color matches the toolbar
+                 if (_options.getToolbarColor() != null && !_options.getToolbarColor().isEmpty()) {
+                     try {
+-                        int toolbarColor = Color.parseColor(_options.getToolbarColor());
+-                        getWindow().setStatusBarColor(toolbarColor);
++                        statusBarColor = Color.parseColor(_options.getToolbarColor());
+                     } catch (IllegalArgumentException e) {
+                         // Use system default
+                     }
+                 }
+             }
++
++            SystemUiChromeSupport.applyDialogWindowChrome(
++                getWindow(),
++                decorView,
++                findViewById(R.id.status_bar_color_view),
++                isAndroid15Plus,
++                statusBarColor,
++                lightStatusBars
++            );
+         }
+     }
+ 
+@@ -1577,8 +1562,8 @@ public class WebViewDialog extends Dialog {
+ 
+                 // Also ensure status bar gets the color
+                 if (getWindow() != null) {
+-                    // Set status bar color
+-                    getWindow().setStatusBarColor(toolbarColor);
++                    // Set status bar color (painted by status_bar_color_view below Android 15)
++                    SystemUiChromeSupport.applyLegacyStatusBarColorViaView(findViewById(R.id.status_bar_color_view), toolbarColor);
+ 
+                     // Determine proper status bar text color (light or dark icons)
+                     boolean isDarkBackground = isDarkColor(toolbarColor);

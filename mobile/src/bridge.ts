@@ -8,6 +8,8 @@ import { CapacitorCookies, CapacitorHttp } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
 import { LocalNotifications } from "@capacitor/local-notifications";
 import { Preferences } from "@capacitor/preferences";
+import { plainPreferences, secretStore } from "./secret-store";
+import { loadServerSecrets, migrateSecret, storeServerSecrets, withoutSecrets } from "./secret-store-core";
 import { Share } from "@capacitor/share";
 import { BackgroundColor, InAppBrowser, ToolBarType } from "@capgo/inappbrowser";
 import { createWebBluetooth } from "./ble-polyfill-core";
@@ -34,6 +36,7 @@ import {
   parseLinkOrAddress,
   codeCandidates,
   parseRoomCode,
+  insecureRemoteOrigin,
   trustedTunnelOrigin,
   type JoinLink,
 } from "../../src/shared/deep-link";
@@ -83,8 +86,8 @@ interface StoredServer {
   name: string;
   username: string;
   lastUsedAt: string;
-  // Stored in app-private Preferences. Android sandboxes this per app;
-  // moving tokens into a Keystore-backed store is a planned hardening step.
+  // Kept in the secret store (secret-store-core.ts: sealed under a Keystore
+  // key, left out of backups), never in the saved list itself.
   token: string;
   tokenExpiresAt: string;
   // The password for an account the app made up on the player's behalf
@@ -108,18 +111,34 @@ const TIMEOUT_MS = 10_000;
 
 // ---------- storage ----------
 
+// The ids the saved list held when last read or written, so a server taken
+// off it has its secrets removed with it.
+let knownServerIds: string[] = [];
+
 async function loadServers(): Promise<StoredServer[]> {
+  let parsed: StoredServer[] = [];
   try {
     const { value } = await Preferences.get({ key: SERVERS_KEY });
-    const parsed = value ? (JSON.parse(value) as StoredServer[]) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    const raw = value ? (JSON.parse(value) as StoredServer[]) : [];
+    parsed = Array.isArray(raw) ? raw : [];
   } catch {
     return [];
   }
+  // Each entry's token and made-up password come from the secret store; a
+  // list saved before the store existed has them moved in, and is saved
+  // again without them.
+  const { servers, migrated } = await loadServerSecrets(parsed, secretStore);
+  knownServerIds = servers.map((server) => server.id);
+  if (migrated) {
+    await Preferences.set({ key: SERVERS_KEY, value: JSON.stringify(withoutSecrets(servers)) });
+  }
+  return servers;
 }
 
 async function saveServers(servers: StoredServer[]): Promise<void> {
-  await Preferences.set({ key: SERVERS_KEY, value: JSON.stringify(servers) });
+  await storeServerSecrets(servers, secretStore, knownServerIds);
+  knownServerIds = servers.map((server) => server.id);
+  await Preferences.set({ key: SERVERS_KEY, value: JSON.stringify(withoutSecrets(servers)) });
 }
 
 function summaryOf(server: StoredServer): ServerSummary {
@@ -644,9 +663,9 @@ async function openServer(server: StoredServer, joinCode: string, path = ""): Pr
 
 // ---------- the device-hosted world ----------
 
-// The on-device profile lives beside the server list in app-private
-// Preferences; the world's data itself is the server's SQLite file in the
-// app's files directory (WorldRuntime.java).
+// The on-device profile lives in the secret store (secret-store-core.ts);
+// the world's data itself is the server's SQLite file in the app's files
+// directory (WorldRuntime.java).
 const LOCAL_PROFILE_KEY = "odm-local-profile";
 
 function randomSecret(): string {
@@ -658,9 +677,11 @@ function randomSecret(): string {
     .replaceAll("=", "");
 }
 
+// The profile is the device world's own account (its password and token),
+// so it lives in the secret store too; one saved before that is moved in.
 async function loadLocalProfile(): Promise<LocalProfile | null> {
   try {
-    const { value } = await Preferences.get({ key: LOCAL_PROFILE_KEY });
+    const value = await migrateSecret(LOCAL_PROFILE_KEY, secretStore, plainPreferences);
     const parsed = value ? (JSON.parse(value) as LocalProfile) : null;
     return parsed && typeof parsed.username === "string" ? parsed : null;
   } catch {
@@ -670,19 +691,25 @@ async function loadLocalProfile(): Promise<LocalProfile | null> {
 
 const localWorld = createLocalWorld({
   plugin: LocalWorld,
+  fetchJson,
   loadProfile: loadLocalProfile,
   async saveProfile(profile) {
     if (profile) {
-      await Preferences.set({ key: LOCAL_PROFILE_KEY, value: JSON.stringify(profile) });
+      await secretStore.set(LOCAL_PROFILE_KEY, JSON.stringify(profile));
     } else {
-      await Preferences.remove({ key: LOCAL_PROFILE_KEY });
+      await secretStore.remove(LOCAL_PROFILE_KEY);
     }
+    await Preferences.remove({ key: LOCAL_PROFILE_KEY });
   },
   loginForToken,
   registerAccount,
   tokenIsValid,
   patchAdminSettings,
   getAdminSettings,
+  async plantSession(origin, token) {
+    await clearPortalCookies(origin);
+    await CapacitorCookies.setCookie({ url: origin, key: "odm_session", value: token });
+  },
   async open(origin, token, joinCode, path) {
     await clearPortalCookies(origin);
     await CapacitorCookies.setCookie({ url: origin, key: "odm_session", value: token });
@@ -753,10 +780,10 @@ const publishLedger = createPublishLedger();
 
 async function tableSecretFor(code: string): Promise<string> {
   const key = `${TABLE_SECRET_PREFIX}${code}`;
-  const existing = (await Preferences.get({ key })).value;
+  const existing = await migrateSecret(key, secretStore, plainPreferences);
   if (existing && existing.length >= 16) return existing;
   const secret = randomSecret() + randomSecret();
-  await Preferences.set({ key, value: secret });
+  await secretStore.set(key, secret);
   return secret;
 }
 
@@ -1382,8 +1409,10 @@ async function handleJoinLink(link: JoinLink): Promise<void> {
       const match = probe.instanceId
         ? servers.find((entry) => entry.instanceId === probe.instanceId)
         : undefined;
+      // Never from https to plain http on the open internet.
       const trusted =
         !!match &&
+        !(match.origin.startsWith("https:") && insecureRemoteOrigin(link.origin)) &&
         (trustedTunnelOrigin(link.origin) ||
           (!!link.code && (await resolveRoomCode(link.code)) === link.origin));
       if (match && trusted) {
@@ -1710,6 +1739,10 @@ const bridge: OdmBridge = {
   // server; a phone has none to start.
   localHarnessStatus: async () => ({ ok: false, error: "Agent programs run on a computer, not a phone." }),
   localPlay: (joinCode, path) => localWorld.play(cleanCode(joinCode), safeInnerPath(path)),
+  localExportWorld: () => localWorld.exportWorld(),
+  localImportPick: () => localWorld.importPick(),
+  localImportCommit: () => localWorld.importCommit(),
+  localImportCancel: () => localWorld.importCancel(),
   async shareStart() {
     const status = await shareTunnel.start();
     if (status.state !== "running") return fail(new Error(status.error || "Sharing failed."));

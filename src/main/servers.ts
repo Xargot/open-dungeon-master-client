@@ -40,7 +40,13 @@ export interface StoredServer {
 export interface TokenCrypt {
   encrypt(plain: string): string;
   decrypt(cipher: string): string | null;
+  // "keyring" when the OS really encrypts; "obscured" when it only scrambles
+  // with a fixed key (Linux with no keyring: safeStorage's basic_text);
+  // "none" when nothing is available and tokens are stored as they are.
+  protection?(): CredentialProtection;
 }
+
+export type CredentialProtection = "keyring" | "obscured" | "none";
 
 interface RegistryFile {
   version: 1;
@@ -64,15 +70,44 @@ interface RegistryFile {
   // crash or a plain quit can still take them offline on the next start,
   // rather than leaving a friend's code pointing at a dead address.
   publishedCodes?: string[];
+  // Sign-ins to hosts where the player typed their own password are kept
+  // in memory only and gone when the app closes (Settings).
+  forgetSignInsOnClose?: true;
 }
 
 export class ServerStore {
+  // The parsed registry and the file stamp it was read at. Most accessors
+  // run on every IPC call and status event, and each used to read and parse
+  // the whole file (summaries() once more per entry, through token()). A
+  // stat is enough to tell whether the file changed underneath.
+  private cached: { stamp: string; registry: RegistryFile } | null = null;
+  // Tokens kept for this run only (forgetSignInsOnClose), by entry id.
+  private readonly sessionTokens = new Map<string, string>();
+
   constructor(
     private readonly file: string,
     private readonly crypt: TokenCrypt,
   ) {}
 
+  private stamp(): string {
+    try {
+      const stat = fs.statSync(this.file);
+      return `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+    } catch {
+      return "";
+    }
+  }
+
+  // A private copy: callers change it and hand it to save().
   private load(): RegistryFile {
+    const stamp = this.stamp();
+    if (!this.cached || this.cached.stamp !== stamp) {
+      this.cached = { stamp, registry: this.read() };
+    }
+    return structuredClone(this.cached.registry);
+  }
+
+  private read(): RegistryFile {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.file, "utf8")) as RegistryFile;
       if (parsed && parsed.version === 1 && Array.isArray(parsed.servers)) return parsed;
@@ -87,6 +122,47 @@ export class ServerStore {
     const tmp = `${this.file}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(registry, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, this.file);
+    this.cached = { stamp: this.stamp(), registry: structuredClone(registry) };
+  }
+
+  // A sign-in that may live in memory only: a host where the player typed
+  // their own password (so they can type it again). The device world and
+  // room-code accounts carry a password the app made up, which only this
+  // file holds, so forgetting their sign-in would lock the player out.
+  private sessionOnly(registry: RegistryFile, server: StoredServer): boolean {
+    return !!registry.forgetSignInsOnClose && server.id !== LOCAL_SERVER_ID && !server.secretCipher;
+  }
+
+  private tokenOf(server: StoredServer): string | null {
+    if (server.tokenExpiresAt && Date.parse(server.tokenExpiresAt) <= Date.now()) return null;
+    const held = this.sessionTokens.get(server.id);
+    if (held) return held;
+    if (!server.tokenCipher) return null;
+    return this.crypt.decrypt(server.tokenCipher);
+  }
+
+  // How saved sign-ins are kept, for Settings.
+  credentialStorage(): { protection: CredentialProtection; keepSignIns: boolean } {
+    return { protection: this.crypt.protection?.() ?? "keyring", keepSignIns: !this.load().forgetSignInsOnClose };
+  }
+
+  // Turning "keep" off moves every sign-in that may go into memory now;
+  // turning it back on writes them back to the file.
+  setKeepSignIns(keep: boolean): void {
+    const registry = this.load();
+    if (keep) delete registry.forgetSignInsOnClose;
+    else registry.forgetSignInsOnClose = true;
+    for (const server of registry.servers) {
+      if (!keep && this.sessionOnly(registry, server) && server.tokenCipher) {
+        const token = this.crypt.decrypt(server.tokenCipher);
+        if (token) this.sessionTokens.set(server.id, token);
+        server.tokenCipher = "";
+      } else if (keep && this.sessionTokens.has(server.id)) {
+        server.tokenCipher = this.crypt.encrypt(this.sessionTokens.get(server.id)!);
+        this.sessionTokens.delete(server.id);
+      }
+    }
+    this.save(registry);
   }
 
   // Remote servers only, most recently used first.
@@ -103,7 +179,7 @@ export class ServerStore {
       name: server.name,
       username: server.username,
       lastUsedAt: server.lastUsedAt,
-      hasToken: this.token(server.id) !== null,
+      hasToken: this.tokenOf(server) !== null,
     }));
   }
 
@@ -173,6 +249,12 @@ export class ServerStore {
       instanceId: input.instanceId || existing?.instanceId,
       joinCodes: existing?.joinCodes,
     };
+    if (this.sessionOnly(registry, entry)) {
+      this.sessionTokens.set(entry.id, input.token);
+      entry.tokenCipher = "";
+    } else {
+      this.sessionTokens.delete(entry.id);
+    }
     if (existing) {
       registry.servers[registry.servers.indexOf(existing)] = entry;
     } else {
@@ -186,9 +268,7 @@ export class ServerStore {
   // undecryptable (e.g. the OS keychain changed).
   token(id: string): string | null {
     const server = this.get(id);
-    if (!server || !server.tokenCipher) return null;
-    if (server.tokenExpiresAt && Date.parse(server.tokenExpiresAt) <= Date.now()) return null;
-    return this.crypt.decrypt(server.tokenCipher);
+    return server ? this.tokenOf(server) : null;
   }
 
   // The stored local profile password, or null when absent or undecryptable.
@@ -204,6 +284,7 @@ export class ServerStore {
   clearToken(id: string): void {
     const registry = this.load();
     const server = registry.servers.find((entry) => entry.id === id);
+    this.sessionTokens.delete(id);
     if (!server || !server.tokenCipher) return;
     server.tokenCipher = "";
     server.tokenExpiresAt = "";
@@ -242,6 +323,7 @@ export class ServerStore {
   }
 
   remove(id: string): void {
+    this.sessionTokens.delete(id);
     const registry = this.load();
     registry.servers = registry.servers.filter((server) => server.id !== id);
     if (registry.homeCache) delete registry.homeCache[id];

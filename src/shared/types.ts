@@ -4,6 +4,7 @@
 
 import type { DeckChoice, DeckInfo, FieldRect } from "./deck";
 import type { StoryMemory, StoryMemoryStatus } from "./story-memory";
+import type { WorldPreview } from "./world-transfer";
 
 export type SignupMode = "open" | "invite" | "closed";
 
@@ -346,6 +347,9 @@ export type ShellEvent =
   | { kind: "tunnel-status"; status: TunnelStatus }
   | { kind: "local-ai-progress"; status: LocalAiStatus }
   | { kind: "update-progress"; progress: UpdateProgress }
+  // What the device world's server is doing while it packs or checks a
+  // world archive (src/shared/world-transfer.ts).
+  | { kind: "world-transfer"; phase: string }
   // After every feed refresh, including the ones a local-status or
   // tunnel-status change sets off.
   | { kind: "home-feed"; feed: HomeFeed };
@@ -372,6 +376,9 @@ export interface OdmBridge {
   // Opens a host document (a PDF page set) with the system viewer
   // (phase 21). Absent where the platform's own viewer will do.
   openDocument?(path: string): Promise<boolean>;
+  // The desktop's game screens say which host they show, so a document the
+  // page asks to open is fetched with that host's session (doc:open).
+  gameMounted?(hostId: string): void;
   // The screens' theme (phase 29), so the shell's chrome and the OS
   // frame can follow the parchment or the night.
   setTheme?(mode: "dark" | "light"): Promise<void>;
@@ -425,6 +432,10 @@ export interface OdmBridge {
   // On by default; a host too old for it opens its own pages regardless.
   portalMode(): Promise<boolean>;
   setPortalMode(on: boolean): Promise<void>;
+  // How the desktop keeps saved sign-ins: absent on the phone, whose
+  // secrets sit in the Android Keystore.
+  credentialStorage?(): Promise<{ protection: "keyring" | "obscured" | "none"; keepSignIns: boolean }>;
+  setKeepSignIns?(keep: boolean): Promise<void>;
   // Story memory (src/shared/story-memory.ts): the embedding model the
   // device world searches its story with. Desktop only; null on a desktop
   // whose package carries no embedding runtime (Intel Macs), absent on the
@@ -484,6 +495,14 @@ export interface OdmBridge {
   // phone dictates with its own recognizer, so it leaves these out.
   localSpeechStatus?(): Promise<Result<{ speech: LocalSpeechStatus }>>;
   localSpeechInstall?(): Promise<Result<{ speech: LocalSpeechStatus }>>;
+  // Moving the device world to another device (src/shared/world-transfer.ts):
+  // pack it into one file the person saves (saved is false when they close
+  // the save dialog), or check a file they pick (preview is null when they
+  // close the picker) and, once they agree, swap it in and sign its owner in.
+  localExportWorld?(): Promise<Result<{ saved: boolean; file: string; bytes: number }>>;
+  localImportPick?(): Promise<Result<{ preview: WorldPreview | null }>>;
+  localImportCommit?(): Promise<Result<{ owner: string }>>;
+  localImportCancel?(): Promise<void>;
   appInfo(): Promise<AppInfo>;
   // The Steam Deck layout switch in Settings; answers with the info as it
   // stands after the change. Desktop only.

@@ -20,6 +20,18 @@ const GEMMA_BASE = "https://huggingface.co/unsloth/gemma-4-12b-it-qat-GGUF/resol
 export const LLAMA_TAG = "b10621";
 const LLAMA_BASE = `https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_TAG}`;
 
+// The SHA-256 GitHub lists for each pinned archive. Raising LLAMA_TAG means
+// updating these from the new release's assets.
+const LLAMA_SHA256: Record<string, string> = {
+  [`llama-${LLAMA_TAG}-bin-ubuntu-vulkan-x64.tar.gz`]: "3db8e4411033ef4531072be43377e859bcdbf9640c7bb36f9656e538eabd0978",
+  [`llama-${LLAMA_TAG}-bin-win-vulkan-x64.zip`]: "2672d85bf87c8280d94dee01eb6a86280046878f70a07d786a93637fa9081163",
+  [`llama-${LLAMA_TAG}-bin-macos-arm64.tar.gz`]: "429c8270608600188035e5e92f7d78dffb7900904fe7dd7e6a84f48068cd13cf",
+};
+
+export function llamaArchiveSha256(url: string): string | null {
+  return LLAMA_SHA256[url.slice(url.lastIndexOf("/") + 1)] ?? null;
+}
+
 export function llamaArchiveUrl(platform: string, arch: string): string | null {
   if (platform === "linux" && arch === "x64") {
     return `${LLAMA_BASE}/llama-${LLAMA_TAG}-bin-ubuntu-vulkan-x64.tar.gz`;

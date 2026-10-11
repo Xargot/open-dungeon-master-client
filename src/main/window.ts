@@ -1,5 +1,5 @@
 import path from "node:path";
-import { BrowserWindow, Menu, WebContentsView, screen, session, shell } from "electron";
+import { BrowserWindow, Menu, WebContentsView, screen, session, shell, type WebContents, type WebFrameMain } from "electron";
 import type { FieldRect } from "../shared/deck";
 import type { ShellEvent } from "../shared/types";
 import { appIconPath } from "./app-icon";
@@ -42,6 +42,8 @@ function openExternally(url: string): void {
 // Server pages get microphone (voice chat), notifications (session
 // reminders and turn alerts), clipboard and fullscreen, and nothing else.
 // Requests from any other origin are denied outright.
+// The requesting page's parsed origin must match exactly: a prefix test let
+// "http://host:3000.evil.example" pass for "http://host:3000".
 function hardenPartition(partition: string, origin: string): void {
   const allowed = new Set([
     "media",
@@ -52,7 +54,7 @@ function hardenPartition(partition: string, origin: string): void {
   ]);
   const ses = session.fromPartition(partition);
   ses.setPermissionRequestHandler((_wc, permission, callback, details) => {
-    callback(allowed.has(permission) && details.requestingUrl.startsWith(origin));
+    callback(allowed.has(permission) && sameOrigin(details.requestingUrl, origin));
   });
   // Web Bluetooth (Pixels dice) skips the permission handler; its chooser
   // and pairing prompts are wired per view in attachView.
@@ -214,8 +216,23 @@ export class ShellWindow {
     return new Promise((resolve) => contents.once("did-finish-load", () => resolve()));
   }
 
+  // True when an IPC message came from one of the shell's own pages (the
+  // main window or the table screen), from its top frame and still showing
+  // the app's own file: never a server's page in the view on top, a frame
+  // inside a page, or a page that somehow got navigated elsewhere.
+  isShellPage(event: { sender: WebContents; senderFrame: WebFrameMain | null }): boolean {
+    const own = [this.win, this.tableWin].some((w) => !!w && !w.isDestroyed() && w.webContents === event.sender);
+    const frame = event.senderFrame;
+    return own && !!frame && frame.parent === null && frame.url.startsWith("file:");
+  }
+
   sendEvent(event: ShellEvent): void {
     this.win?.webContents.send("odm:event", event);
+  }
+
+  // The window a file dialog belongs to, so it opens over the app.
+  dialogParent(): BrowserWindow | null {
+    return this.win;
   }
 
   // The origin of the server page on top, "" when the manager is showing.

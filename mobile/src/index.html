@@ -2,6 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <!-- The shell's own page, like the desktop's (src/renderer/index.html):
+       its scripts come from the app only, pictures and sound from any
+       host, and calls go to hosts over http(s) or sockets. Inline script is
+       allowed because Capacitor injects its native bridge into this page
+       as an inline script. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; media-src 'self' data: blob: https: http:; connect-src 'self' https: http: ws: wss:; font-src 'self' data:; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'">
   <meta name="viewport"
         content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0a0817">

@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { HardwareInfo, LocalAiStatus, LocalAiTier } from "../../shared/types";
 import {
   catalogEntry,
+  llamaArchiveSha256,
   llamaArchiveUrl,
   presetFor,
   sizeTiers,
@@ -18,6 +19,7 @@ import {
 import { ComfyManager } from "./comfy";
 import { downloadVerified, ensureDiskSpace, fetchHfSha256 } from "./download";
 import { scanHardware } from "./hardware";
+import { openLog } from "../log-files";
 
 const runFile = promisify(execFile);
 
@@ -145,7 +147,7 @@ export class LocalAiManager {
   }
 
   // The catalog GGUFs live on Hugging Face, whose tree API publishes each
-  // LFS file's sha256; fetch it best effort and verify while streaming.
+  // LFS file's sha256; it is looked up first and verified while streaming.
   private async downloadModel(entry: CatalogEntry, target: string): Promise<void> {
     const label = `Downloading ${entry.label} (${entry.sizeGb} GB)`;
     this.setProgress(label, 0);
@@ -166,6 +168,7 @@ export class LocalAiManager {
     this.setProgress(label, 0);
     await downloadVerified(url, archive, {
       kind: "archive",
+      sha256: llamaArchiveSha256(url),
       onProgress: (percent) => this.setProgress(label, percent),
     });
     fs.rmSync(this.binDir, { recursive: true, force: true });
@@ -275,7 +278,7 @@ export class LocalAiManager {
             ? utilityPresetSection(path.join(this.modelsDir, state.utilityFile))
             : ""),
       );
-      const log = fs.openSync(this.logFile, "a");
+      const log = openLog(this.logFile);
       const child = spawn(
         bin,
         [

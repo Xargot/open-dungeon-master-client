@@ -234,3 +234,117 @@ test("changing the model keeps the key the device already holds", async () => {
   assert.equal("utilityApiKey" in patch.text, false);
   assert.equal("openaiApiKey" in patch.images, false);
 });
+
+// ---- moving the world (src/shared/world-transfer.ts) ----
+
+// The world's /api/admin/world as a fake: a job that finishes on the first
+// look, and a record of what was asked.
+function transferHarness(options: { checkError?: string; saved?: boolean; pickName?: string } = {}) {
+  const h = harness({
+    world: { firstRun: false },
+    profile: { username: "kaleb", secret: "kept", token: "tok", tokenExpiresAt: "2030-01-01T00:00:00.000Z" },
+    tokenValid: true,
+  });
+  const asked: Array<{ method: string; body: unknown; auth: string }> = [];
+  const events: string[] = [];
+  let job: unknown = null;
+  h.deps.emit = (event) => {
+    if (event.kind === "world-transfer") events.push(event.phase);
+  };
+  h.deps.fetchJson = async (url, init) => {
+    assert.equal(url, "http://127.0.0.1:3210/api/admin/world");
+    asked.push({ method: init.method ?? "GET", body: init.body, auth: init.headers?.authorization ?? "" });
+    const body = init.body as { action?: string; name?: string } | undefined;
+    if (init.method === "POST" && body?.action === "export") {
+      job = { kind: "export", phase: "Packing 3 of 3 files", done: true, error: "", preview: null, export: { name: "odm-world-2026-10-11T10-00-00Z.tar.gz", bytes: 4096, sha256: "a".repeat(64), counts: { campaigns: 1, users: 1, messages: 3, files: 2 } } };
+      return { status: 202, data: { job } };
+    }
+    if (init.method === "POST" && body?.action === "check") {
+      job = { kind: "check", phase: "Checking 3 of 3 files", done: true, error: options.checkError ?? "", export: null, preview: options.checkError ? null : { name: body.name, serverVersion: "0.26.2", createdAt: "2026-10-11T10:00:00.000Z", owner: "rowan", counts: { campaigns: 2, users: 3, messages: 40, files: 9 } } };
+      return { status: 202, data: { job } };
+    }
+    if (init.method === "POST" && body?.action === "commit") return { status: 200, data: { owner: "rowan", restart: true } };
+    if (init.method === "POST" && body?.action === "discard") return { status: 200, data: { ok: true } };
+    return { status: 200, data: { job } };
+  };
+  const native: string[] = [];
+  h.deps.plugin.saveArchive = async ({ name, suggested }) => {
+    native.push(`save:${name}:${suggested}`);
+    return options.saved === false ? { saved: false } : { saved: true, label: suggested };
+  };
+  h.deps.plugin.pickArchive = async () => {
+    native.push("pick");
+    return { name: options.pickName ?? "import-abc.tar.gz" };
+  };
+  return { ...h, asked, events, native };
+}
+
+test("an export packs the world on its server and saves the file where the person chooses", async () => {
+  const h = transferHarness();
+  const result = await createLocalWorld(h.deps).exportWorld();
+  assert.deepEqual(result, { ok: true, saved: true, file: "odm-world-2026-10-11T10-00-00Z.tar.gz", bytes: 4096 });
+  assert.deepEqual(h.native, ["save:odm-world-2026-10-11T10-00-00Z.tar.gz:odm-world-2026-10-11T10-00-00Z.tar.gz"]);
+  assert.ok(h.asked.every((call) => call.auth === "Bearer tok"), "as the world's owner");
+  assert.deepEqual(h.asked.at(-1)?.body, { action: "discard" }, "the staged copy is dropped once saved");
+  assert.ok(h.events.includes("Packing 3 of 3 files"));
+});
+
+test("closing the save dialog keeps nothing and says nothing was saved", async () => {
+  const h = transferHarness({ saved: false });
+  const result = await createLocalWorld(h.deps).exportWorld();
+  assert.deepEqual(result, { ok: true, saved: false, file: "", bytes: 0 });
+  assert.deepEqual(h.asked.at(-1)?.body, { action: "discard" });
+});
+
+test("an import shows what the archive holds before anything is replaced, then signs its owner in", async () => {
+  const h = transferHarness();
+  const world = createLocalWorld(h.deps);
+  const picked = await world.importPick();
+  assert.equal(picked.ok, true);
+  assert.equal(picked.ok && picked.preview?.owner, "rowan");
+  assert.equal(h.asked.some((call) => (call.body as { action?: string } | undefined)?.action === "commit"), false, "a pick never commits");
+
+  const planted: string[] = [];
+  h.deps.plantSession = async (origin, token) => {
+    planted.push(`${origin}|${token}`);
+  };
+  const committed = await world.importCommit();
+  assert.deepEqual(committed, { ok: true, owner: "rowan" });
+  assert.deepEqual(
+    planted,
+    ["http://127.0.0.1:3210|tok", "http://127.0.0.1:3210|tok-relogin"],
+    "the owner's own session rides every transfer call, and the replaced world's cookie never outlives it",
+  );
+  const commit = h.asked.find((call) => (call.body as { action?: string } | undefined)?.action === "commit");
+  assert.deepEqual(commit?.body, { action: "commit", name: "import-abc.tar.gz", ownerPassword: "minted-secret" });
+  assert.ok(h.calls.includes("login:rowan:minted-secret"), "the restarted world signs its owner in with the minted password");
+  assert.equal(h.profile()?.username, "rowan");
+  assert.equal(h.profile()?.secret, "minted-secret");
+});
+
+test("a refused archive is dropped and nothing commits", async () => {
+  const h = transferHarness({ checkError: "media/uploads/x.png is damaged: its fingerprint does not match." });
+  const world = createLocalWorld(h.deps);
+  const picked = await world.importPick();
+  assert.deepEqual(picked, { ok: false, error: "media/uploads/x.png is damaged: its fingerprint does not match." });
+  assert.deepEqual(h.asked.at(-1)?.body, { action: "discard" });
+  assert.deepEqual(await world.importCommit(), { ok: false, error: "Pick a world file first." });
+});
+
+test("closing the picker is not an error", async () => {
+  const h = transferHarness({ pickName: "" });
+  assert.deepEqual(await createLocalWorld(h.deps).importPick(), { ok: true, preview: null });
+});
+
+test("a phone nobody has played on yet makes its owner first, so it can take a world in", async () => {
+  const h = transferHarness();
+  h.world.firstRun = true;
+  let profile: LocalProfile | null = null;
+  h.deps.loadProfile = async () => profile;
+  h.deps.saveProfile = async (next) => {
+    profile = next;
+  };
+  const picked = await createLocalWorld(h.deps).importPick();
+  assert.equal(picked.ok, true);
+  assert.ok(h.calls.includes("register:player:minted-secret"));
+});

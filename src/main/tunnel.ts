@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -10,6 +11,7 @@ import {
   type BrokerSession,
 } from "../shared/broker";
 import type { TunnelStatus } from "../shared/types";
+import { rotateLog } from "./log-files";
 
 // Hosts an offline world on the public internet through a Cloudflare quick
 // tunnel: no account, no port forwarding, a random https address on
@@ -45,17 +47,30 @@ function brokerUrl(): string {
 
 // cloudflared is a single static binary. It is fetched once per install from
 // Cloudflare's official GitHub releases and never auto-updates itself
-// (--no-autoupdate). macOS publishes a .tgz instead of a bare binary; that
-// is handled when the mac build lands.
-function downloadUrl(): string | null {
-  const base = "https://github.com/cloudflare/cloudflared/releases/latest/download";
-  if (process.platform === "linux") {
-    return `${base}/cloudflared-linux-${process.arch === "arm64" ? "arm64" : "amd64"}`;
-  }
-  if (process.platform === "win32") {
-    return `${base}/cloudflared-windows-amd64.exe`;
-  }
+// (--no-autoupdate). It used to come from the moving "latest" release with
+// only its size and header checked before it was run; now it is one pinned
+// release whose SHA-256 must match the digest written here (taken from that
+// release's notes and checked against the downloaded files). Raising the
+// version means updating both. macOS publishes a .tgz instead of a bare
+// binary; that is handled when the mac build lands.
+export const CLOUDFLARED_VERSION = "2026.10.0";
+const CLOUDFLARED_SHA256: Record<string, string> = {
+  "cloudflared-linux-amd64": "d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db",
+  "cloudflared-linux-arm64": "e6422b9d4f72d3194bc5a38676f13667c06666523217b842a877d72a80b5ac08",
+  "cloudflared-windows-amd64.exe": "86aee4017b26625cee8484c113558f48effa4cd47f7aa05fcf425604e5d2b23c",
+};
+
+function assetName(): string | null {
+  if (process.platform === "linux") return `cloudflared-linux-${process.arch === "arm64" ? "arm64" : "amd64"}`;
+  if (process.platform === "win32") return "cloudflared-windows-amd64.exe";
   return null;
+}
+
+// Streamed, so hashing tens of megabytes never holds up the window.
+async function sha256File(file: string): Promise<string> {
+  const hash = createHash("sha256");
+  await pipeline(fs.createReadStream(file), hash);
+  return hash.digest("hex");
 }
 
 export class QuickTunnel {
@@ -99,9 +114,23 @@ export class QuickTunnel {
 
   async ensureBinary(): Promise<string> {
     const target = this.binPath();
-    if (fs.existsSync(target)) return target;
-    const url = downloadUrl();
-    if (!url) throw new Error("Sharing online is not supported on this platform yet.");
+    const asset = assetName();
+    if (!asset) throw new Error("Sharing online is not supported on this platform yet.");
+    const digest = CLOUDFLARED_SHA256[asset]!;
+    // The digest the binary on disk was verified at. A binary fetched before
+    // the pin (or touched since) is hashed once; one that is not the pinned
+    // release is replaced.
+    const verified = `${target}.sha256`;
+    if (fs.existsSync(target)) {
+      const known = fs.existsSync(verified) ? fs.readFileSync(verified, "utf8").trim() : "";
+      if (known === digest) return target;
+      if ((await sha256File(target)) === digest) {
+        fs.writeFileSync(verified, digest);
+        return target;
+      }
+      fs.rmSync(target, { force: true });
+    }
+    const url = `https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/${asset}`;
     fs.mkdirSync(this.binDir, { recursive: true });
     const partial = `${target}.part`;
     try {
@@ -129,10 +158,11 @@ export class QuickTunnel {
       if (expectedBytes > 0 && written !== expectedBytes) {
         throw new Error("The tunnel helper download was cut short. Try sharing again.");
       }
-      if (!looksLikeExecutable(partial)) {
+      if (!looksLikeExecutable(partial) || (await sha256File(partial)) !== digest) {
         throw new Error("The tunnel helper download was corrupted. Try sharing again.");
       }
       fs.renameSync(partial, target);
+      fs.writeFileSync(verified, digest);
     } catch (err) {
       fs.rmSync(partial, { force: true });
       throw err;
@@ -170,6 +200,7 @@ export class QuickTunnel {
   }
 
   private attachLog(child: ChildProcess): void {
+    rotateLog(this.logFile);
     const log = fs.createWriteStream(this.logFile, { flags: "a" });
     child.stdout?.on("data", (chunk) => log.write(chunk));
     child.stderr?.on("data", (chunk) => log.write(chunk));
@@ -179,6 +210,7 @@ export class QuickTunnel {
   // Watches cloudflared's log output for the assigned public URL.
   private captureUrl(child: ChildProcess): Promise<string> {
     return new Promise((resolve, reject) => {
+      rotateLog(this.logFile);
       const log = fs.createWriteStream(this.logFile, { flags: "a" });
       let done = false;
       const finish = (err: Error | null, url = ""): void => {

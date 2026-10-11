@@ -34,6 +34,38 @@ export interface StreamStop {
 
 const RECONNECT_MS = [1000, 2000, 5000, 10000];
 
+// What one call may cost before it is given up (audit C2): a host that
+// stops answering, or answers without end, used to hold a screen busy and
+// fill memory as long as it liked.
+const JSON_DEADLINE_MS = 30_000;
+const JSON_MAX_BYTES = 16 * 1024 * 1024;
+const FILE_DEADLINE_MS = 120_000;
+const FILE_MAX_BYTES = 128 * 1024 * 1024;
+
+// Reads a body, refusing it as soon as it passes `max` bytes (whatever its
+// Content-Length claimed, or without one).
+async function readCapped(res: Response, max: number): Promise<Uint8Array<ArrayBuffer>[]> {
+  const declared = Number(res.headers.get("content-length") || 0);
+  if (declared > max) {
+    await res.body?.cancel().catch(() => undefined);
+    throw new HostError("The host sent more than this app will take in one answer.", res.status);
+  }
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  if (!res.body) return chunks;
+  const reader = res.body.getReader();
+  let total = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return chunks;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => undefined);
+      throw new HostError("The host sent more than this app will take in one answer.", res.status);
+    }
+    chunks.push(value);
+  }
+}
+
 export class HostClient {
   constructor(readonly session: HostSession) {}
 
@@ -49,16 +81,20 @@ export class HostClient {
   // own message where it gave one.
   async json<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
     let res: Response;
+    let text: string;
     try {
       res = await fetch(`${this.origin}${path}`, {
         method: init.method ?? "GET",
         headers: this.headers(init.body !== undefined ? { "content-type": "application/json" } : {}),
         body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+        signal: AbortSignal.timeout(JSON_DEADLINE_MS),
       });
-    } catch {
+      const decoder = new TextDecoder();
+      text = (await readCapped(res, JSON_MAX_BYTES)).map((chunk) => decoder.decode(chunk, { stream: true })).join("") + decoder.decode();
+    } catch (err) {
+      if (err instanceof HostError) throw err;
       throw new HostError(`Could not reach ${this.origin}.`, 0);
     }
-    const text = await res.text();
     let body: unknown = null;
     try {
       body = text ? JSON.parse(text) : null;
@@ -90,9 +126,16 @@ export class HostClient {
     // Generated pictures are served "immutable" for a year, so without this
     // they stayed broken in the apps for a year. The object URL cache above
     // this call keeps one download per picture per app session.
-    const res = await fetch(`${this.origin}${path}`, { headers: this.headers(), cache: "reload" });
-    if (!res.ok) throw new HostError(`${this.origin} answered ${res.status}.`, res.status);
-    const blob = await res.blob();
+    const res = await fetch(`${this.origin}${path}`, {
+      headers: this.headers(),
+      cache: "reload",
+      signal: AbortSignal.timeout(FILE_DEADLINE_MS),
+    });
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
+      throw new HostError(`${this.origin} answered ${res.status}.`, res.status);
+    }
+    const blob = new Blob(await readCapped(res, FILE_MAX_BYTES), { type: res.headers.get("content-type") ?? "" });
     return { url: URL.createObjectURL(blob), bytes: blob.size };
   }
 
@@ -134,10 +177,16 @@ export class HostClient {
           onState?.(true);
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
-          for (;;) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            parser.feed(decoder.decode(value, { stream: true }));
+          try {
+            for (;;) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              // Throws on a line or event past the parser's ceiling; the
+              // connection is dropped and the reconnect resumes by id.
+              parser.feed(decoder.decode(value, { stream: true }));
+            }
+          } finally {
+            await reader.cancel().catch(() => undefined);
           }
         } catch (err) {
           if (closed) return;
