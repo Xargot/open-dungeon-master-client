@@ -21,3 +21,11 @@ declare module "@/components/PageSkeleton" {
   export type SkeletonKind = "home" | "lobby" | "table" | "roster" | "sheet" | "shelf" | "hub" | "list" | "flat";
   export const PageSkeleton: ComponentType<{ kind?: SkeletonKind; className?: string }>;
 }
+
+// The server's confirm and notice host (src/components/ui/ConfirmDialog.tsx),
+// which its root layout mounts; the game root mounts it here, so appConfirm
+// and appNotice draw the app's own dialog instead of the web view's.
+declare module "@/components/ui/ConfirmDialog" {
+  import type { ComponentType } from "preact/compat";
+  export const ConfirmHost: ComponentType<Record<string, never>>;
+}

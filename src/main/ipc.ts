@@ -973,6 +973,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
           apiKey: str(setup.apiKey, 400),
           model: str(setup.model, 200),
           utilityModel: str(setup.utilityModel, 200),
+          fast: setup.fast === true,
         },
         saved,
       );
@@ -995,7 +996,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
       if (!token || !local.origin) return { ok: false, error: "Set up the local account first." };
       const body = (await getHarnessStatus(local.origin, token, refresh === true)) as {
         statuses?: HarnessCard[];
-        config?: { id?: string; model?: string; utilityModel?: string };
+        config?: { id?: string; model?: string; utilityModel?: string; speed?: string };
       };
       return {
         ok: true,
@@ -1004,6 +1005,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
           id: body.config?.id ?? "",
           model: body.config?.model ?? "",
           utilityModel: body.config?.utilityModel ?? "",
+          fast: body.config?.speed === "fast",
         },
       };
     } catch (err) {

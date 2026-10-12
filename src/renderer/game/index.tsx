@@ -8,6 +8,7 @@
 import { Component, Suspense, lazy, useEffect, useMemo, type ComponentType, type ReactNode } from "preact/compat";
 import { render } from "preact";
 import { DeviceSettings } from "@/components/DeviceSettings";
+import { ConfirmHost } from "@/components/ui/ConfirmDialog";
 import { PageSkeleton, type SkeletonKind } from "@/components/PageSkeleton";
 import { HostClient, type HostSession } from "../api/host.js";
 import { GameRouter, matchRoute } from "./router.js";
@@ -42,6 +43,8 @@ const ROUTES: Route[] = [
   { pattern: "/characters", load: () => import("@/app/characters/page"), skeleton: "roster" },
   { pattern: "/characters/new", load: () => import("@/app/characters/new/page") },
   { pattern: "/characters/:characterId", load: () => import("@/app/characters/[characterId]/page"), skeleton: "sheet" },
+  // The library's build editor and "Duplicate and edit" (server issue 229).
+  { pattern: "/characters/:characterId/edit", load: () => import("@/app/characters/[characterId]/edit/page") },
   { pattern: "/workshop", load: () => import("@/app/workshop/page"), skeleton: "shelf" },
   { pattern: "/workshop/:workshopId", load: () => import("@/app/workshop/[workshopId]/page"), skeleton: "hub" },
   { pattern: "/settings", load: () => import("@/app/settings/page") },
@@ -166,19 +169,27 @@ function GameApp({ router, root, onLeave }: { router: GameRouter; root: HTMLElem
   // The query is not part of the key: a filter or tab in the address updates
   // the page it belongs to instead of tearing it down and starting it again.
   return (
-    <Boundary
-      key={routeKey}
-      onError={(error) => {
-        console.error("game page failed", error);
-        onLeave(location.pathname + location.search);
-      }}
-    >
-      {/* The dust layer is the shell's (index.html, style.css): one for the
-          whole app, under the stars and the topographic lines. */}
-      <Suspense fallback={<PageSkeleton kind={matched.route.skeleton} />}>
-        <Page params={params} searchParams={searchParams} />
-      </Suspense>
-    </Boundary>
+    <>
+      <Boundary
+        key={routeKey}
+        onError={(error) => {
+          console.error("game page failed", error);
+          onLeave(location.pathname + location.search);
+        }}
+      >
+        {/* The dust layer is the shell's (index.html, style.css): one for the
+            whole app, under the stars and the topographic lines. */}
+        <Suspense fallback={<PageSkeleton kind={matched.route.skeleton} />}>
+          <Page params={params} searchParams={searchParams} />
+        </Suspense>
+      </Boundary>
+      {/* The host's own confirm and notice (appConfirm, appNotice), which the
+          server's root layout mounts: without one here every question a page
+          asked fell back to the web view's bare confirm() and alert(), such
+          as Discard this copy and deleting a campaign. Outside the page's
+          boundary, so a question survives the page it was asked from. */}
+      <ConfirmHost />
+    </>
   );
 }
 

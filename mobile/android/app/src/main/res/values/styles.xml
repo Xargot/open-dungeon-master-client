@@ -27,8 +27,15 @@
     </style>
 
 
+    <!-- The launch screen: the d20 at a fixed size on the night color, drawn
+         by the system splash screen (core-splashscreen below Android 12).
+         MainActivity installs it, which also moves the activity on to the
+         theme above; never a bitmap as android:background here, which
+         Android stretches to each view's shape and hands to every view
+         that has no background of its own. -->
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
-        <item name="android:background">@drawable/splash</item>
+        <item name="windowSplashScreenBackground">@color/odm_night</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
         <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>
     </style>
 </resources>

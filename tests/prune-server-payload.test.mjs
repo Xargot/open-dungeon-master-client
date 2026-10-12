@@ -3,6 +3,7 @@
 // files. Both bundlers rely on it, so the claim is checked on a staged tree.
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -82,6 +83,7 @@ test("a payload with no src at all prunes without complaint", () => {
 });
 
 import {
+  dedupeChunks,
   dropLocalAssets,
   pruneBuildTraces,
   pruneDeadFiles,
@@ -276,6 +278,40 @@ test("a payload with no sound library prunes without mentioning one", () => {
   try {
     assert.equal(pruneAmbienceLibrary(dir), 0);
     assert.deepEqual(pruneServerPayload(dir), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a chunk Turbopack wrote under several names keeps one copy; the rest hand over its exports", () => {
+  const dir = stage(["server.js", "package.json"]);
+  // Node reads the nearest package.json when it requires a chunk below.
+  fs.writeFileSync(path.join(dir, "package.json"), "{}");
+  const chunks = path.join(dir, ".next/server/chunks");
+  fs.mkdirSync(path.join(chunks, "ssr"), { recursive: true });
+  const body = 'module.exports=[[562810,127438,e=>{e.s(["z",0,"zod"],127438)}]];';
+  fs.writeFileSync(path.join(chunks, "_1el--tkacnlaz._.js"), `${body}\n\n//# sourceMappingURL=_1el--tkacnlaz._.js.map`);
+  fs.writeFileSync(path.join(chunks, "_0p92j0z9au-vu._.js"), `${body}\n\n//# sourceMappingURL=_0p92j0z9au-vu._.js.map`);
+  fs.writeFileSync(path.join(chunks, "ssr/_2abc._.js"), `${body}\n`);
+  fs.writeFileSync(path.join(chunks, "src_lib_other._.js"), 'module.exports=[[1,e=>{e.s(["a",0,1],1)}]];');
+  // The browser-style chunks register themselves; two alike are left alone.
+  fs.writeFileSync(path.join(chunks, "ssr/a.js"), '(()=>{"use strict";globalThis.X=1})();');
+  fs.writeFileSync(path.join(chunks, "ssr/b.js"), '(()=>{"use strict";globalThis.X=1})();');
+  try {
+    const dropped = pruneServerPayload(dir);
+    assert.ok(dropped.some((line) => line.startsWith(".next/server/chunks duplicates (2 copies, ")), dropped.join(", "));
+    // Sorted order keeps the first name; the others require it, from wherever they sit.
+    assert.equal(fs.readFileSync(path.join(chunks, "_0p92j0z9au-vu._.js"), "utf8"), `${body}\n\n//# sourceMappingURL=_0p92j0z9au-vu._.js.map`);
+    assert.equal(fs.readFileSync(path.join(chunks, "_1el--tkacnlaz._.js"), "utf8"), 'module.exports=require("./_0p92j0z9au-vu._.js");\n');
+    assert.equal(fs.readFileSync(path.join(chunks, "ssr/_2abc._.js"), "utf8"), 'module.exports=require("../_0p92j0z9au-vu._.js");\n');
+    assert.equal(fs.readFileSync(path.join(chunks, "src_lib_other._.js"), "utf8"), 'module.exports=[[1,e=>{e.s(["a",0,1],1)}]];');
+    assert.equal(fs.readFileSync(path.join(chunks, "ssr/b.js"), "utf8"), '(()=>{"use strict";globalThis.X=1})();');
+    // Node hands the stub's caller the very array the kept chunk exports.
+    const load = createRequire(path.join(chunks, "x.js"));
+    assert.equal(load("./_1el--tkacnlaz._.js"), load("./_0p92j0z9au-vu._.js"));
+    assert.equal(load("./ssr/_2abc._.js")[0][0], 562810);
+    // A second pass finds nothing left to fold.
+    assert.deepEqual(dedupeChunks(dir), { count: 0, bytes: 0 });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -9,6 +9,8 @@ import { playLocal } from "./local.js";
 import { renderError } from "./servers.js";
 import { isAndroid, state } from "./state.js";
 import { renderHarnessPicker } from "./harness-ai.js";
+import { speedChoice } from "./speed-choice.js";
+import { openAiFastModel } from "../shared/ai-setup.js";
 import { speechSummary } from "../shared/speech.js";
 import type { AiSetup, HardwareInfo, LocalAiStatus, LocalAiTier, LocalSpeechStatus, SavedAi } from "../shared/types";
 
@@ -390,6 +392,12 @@ function renderOpenAiForm(saved: SavedAi | null = null): void {
     "text",
     saved?.utilityModel || "gpt-5-mini",
   );
+  // Fast is offered while either model has the tier (GPT-6, GPT-5.6).
+  const speed = speedChoice(saved?.fast === true);
+  const offerFast = () => speed.offer(openAiFastModel(modelField.value) || openAiFastModel(utilityField.value));
+  modelField.addEventListener("input", offerFast);
+  utilityField.addEventListener("input", offerFast);
+  offerFast();
   const error = el("p", "error");
   const submit = button("primary", "Save and play");
   submit.type = "submit";
@@ -399,7 +407,7 @@ function renderOpenAiForm(saved: SavedAi | null = null): void {
     "hint",
     "One key for this whole device: every campaign here uses it, new or old, for narration and for pictures.",
   );
-  form.append(keyLabel, modelLabel, utilityLabel, scope, error, submit);
+  form.append(keyLabel, modelLabel, utilityLabel, speed.row, scope, error, submit);
   form.addEventListener("input", () => {
     openAiTouched = true;
   });
@@ -412,6 +420,7 @@ function renderOpenAiForm(saved: SavedAi | null = null): void {
       apiKey: keyField.value.trim(),
       model: modelField.value.trim(),
       utilityModel: utilityField.value.trim(),
+      fast: speed.fast(),
     };
     void finishAi(setup).catch(() => undefined).then(() => {
       submit.disabled = false;

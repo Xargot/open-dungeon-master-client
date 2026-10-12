@@ -9,6 +9,8 @@ import { button, chip, copyText, el } from "./dom.js";
 import { renderError } from "./servers.js";
 import { state } from "./state.js";
 import type { AiSetup, HarnessCard, HarnessStatusResult } from "../shared/types";
+import { harnessFastModel } from "../shared/ai-setup.js";
+import { speedChoice } from "./speed-choice.js";
 
 type Finish = (setup: AiSetup) => Promise<void>;
 type Back = () => void;
@@ -61,7 +63,7 @@ export function renderHarnessPicker(finish: Finish, back: Back, refresh = false)
 
 function drawPicker(
   statuses: HarnessCard[],
-  current: { id: string; model: string; utilityModel: string },
+  current: { id: string; model: string; utilityModel: string; fast?: boolean },
   finish: Finish,
   back: Back,
 ): void {
@@ -102,7 +104,7 @@ function drawPicker(
 
 function drawDetail(
   card: HarnessCard,
-  current: { id: string; model: string; utilityModel: string },
+  current: { id: string; model: string; utilityModel: string; fast?: boolean },
   finish: Finish,
   statuses: HarnessCard[],
   back: Back,
@@ -159,6 +161,16 @@ function drawDetail(
   const same = current.id === card.id;
   const story = pick("Story model", same ? current.model : "", false);
   const utility = pick("Bookkeeping model (summaries, Ask)", same ? current.utilityModel : "", true);
+  // Fast where the program runs the chosen model at it: Claude Code on its
+  // Opus models, Codex where its model list says so.
+  const speed = speedChoice(same && current.fast === true);
+  const offerFast = () =>
+    speed.offer(
+      harnessFastModel(card.id, story.select.value, models) || harnessFastModel(card.id, utility.select.value, models),
+    );
+  story.select.addEventListener("change", offerFast);
+  utility.select.addEventListener("change", offerFast);
+  offerFast();
   const scope = el(
     "p",
     "hint",
@@ -167,7 +179,7 @@ function drawDetail(
   const submit = button("primary", "Save and play", undefined, "play");
   submit.type = "submit";
   submit.classList.add("block");
-  form.append(story.wrap, utility.wrap, scope, submit);
+  form.append(story.wrap, utility.wrap, speed.row, scope, submit);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     submit.disabled = true;
@@ -177,6 +189,7 @@ function drawDetail(
       model: "",
       utilityModel: "",
       harness: { id: card.id, model: story.select.value, utilityModel: utility.select.value },
+      fast: speed.fast(),
     })
       .catch(() => undefined)
       .then(() => {

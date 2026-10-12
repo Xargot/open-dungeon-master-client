@@ -10,8 +10,12 @@
 // - Android launcher mipmaps: legacy square, round, and the adaptive
 //   foreground layer (the d20 alone, sized into the 66% safe zone; the
 //   background layer is the solid color in values/ic_launcher_background.xml).
-// - Android splash drawables: the d20 centered on the arcane-night background
-//   at every density Capacitor's template ships.
+// - Android splash icon: the d20 alone on a transparent 288dp square, for the
+//   launch theme's windowSplashScreenAnimatedIcon (values/styles.xml). The
+//   system draws it centered at that fixed size over the night color, so it
+//   keeps its shape on every screen. A full-screen bitmap set as a theme
+//   background was stretched to the window's proportions (wide and thin on
+//   a fold's inner screen) and leaked into every view without a background.
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,23 +93,12 @@ for (const [name, launcher, adaptive] of densities) {
   );
 }
 
-// Android splash, same sizes as the Capacitor template it replaces.
-const splashes = [
-  ["drawable", 480, 320],
-  ["drawable-land-mdpi", 480, 320],
-  ["drawable-land-hdpi", 800, 480],
-  ["drawable-land-xhdpi", 1280, 720],
-  ["drawable-land-xxhdpi", 1600, 960],
-  ["drawable-land-xxxhdpi", 1920, 1280],
-  ["drawable-port-mdpi", 320, 480],
-  ["drawable-port-hdpi", 480, 800],
-  ["drawable-port-xhdpi", 720, 1280],
-  ["drawable-port-xxhdpi", 960, 1600],
-  ["drawable-port-xxxhdpi", 1280, 1920],
-];
-for (const [dir, width, height] of splashes) {
+// Android splash icon: 288dp at each density. The system masks it to a
+// 192dp circle, so the die takes 60% of the square and stays inside it.
+for (const [name, launcher] of densities) {
+  const size = launcher * 6;
   await write(
-    (await composed(width, height, 0.3, BG)).flatten({ background: BG }),
-    path.relative(root, path.join(res, dir, "splash.png")),
+    await composed(size, size, 0.6, { r: 0, g: 0, b: 0, alpha: 0 }),
+    path.relative(root, path.join(res, `drawable-${name}`, "splash_icon.png")),
   );
 }

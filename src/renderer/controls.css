@@ -349,6 +349,9 @@ select:where(:not(.game-root *)):focus {
 
 /* ---------- motion ---------- */
 
+/* Story AI's Fast choice rises in when a model with the tier is picked. */
+.speed-choice.rise { animation: fade-up 320ms var(--ease-snap) both; }
+
 @keyframes fade-up {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }

@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
-import { DEFAULT_MODEL, NO_SAVED_AI, harnessPatch, openAiPatch, savedAiFrom } from "../dist/shared/ai-setup.js";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  DEFAULT_MODEL,
+  FAST_COST_NOTE,
+  NO_SAVED_AI,
+  claudeFastModel,
+  harnessFastModel,
+  harnessPatch,
+  openAiFastModel,
+  openAiPatch,
+  savedAiFrom,
+} from "../dist/shared/ai-setup.js";
+
+const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const serverDir = path.resolve(process.env.ODM_SERVER_DIR ?? path.join(repo, "..", "open-dungeon-master"));
+const serverSpeedTier = path.join(serverDir, "src", "lib", "speed-tier.ts");
 
 const setup = (apiKey, model = "", utilityModel = "") => ({ choice: "openai", apiKey, model, utilityModel });
 const openAiConfig = (text) => ({
@@ -56,7 +73,7 @@ test("an agent the device already has narrates every campaign, and no key is eve
     harness: { id: "claude", model: " sonnet ", utilityModel: "haiku" },
   });
   assert.deepEqual(built.patch, {
-    harness: { id: "claude", model: "sonnet", utilityModel: "haiku" },
+    harness: { id: "claude", model: "sonnet", utilityModel: "haiku", speed: "", utilitySpeed: "" },
     text: { provider: "harness" },
   });
   assert.ok(!JSON.stringify(built.patch).includes("ApiKey"), "the agent's own sign-in is used, nothing else");
@@ -75,4 +92,58 @@ test("a device narrating with an agent is read back as that agent, not as a key"
   assert.equal(saved.model, "llama/qwen3.6-35b");
   assert.equal(saved.keySaved, false);
   assert.deepEqual(savedAiFrom({ config: { text: { provider: "harness" }, harness: { id: "" } } }), NO_SAVED_AI);
+});
+
+test("Fast is asked for only when the door's switch is on, for both roles (server issue 255)", () => {
+  const plain = openAiPatch(setup("sk-1", "gpt-6-sol"), NO_SAVED_AI);
+  assert.equal(plain.patch.text.speed, "", "the provider default unless chosen");
+  assert.equal(plain.patch.text.utilitySpeed, "");
+  const fast = openAiPatch({ ...setup("sk-1", "gpt-6-sol", "gpt-5.6-mini"), fast: true }, NO_SAVED_AI);
+  assert.equal(fast.patch.text.speed, "fast");
+  assert.equal(fast.patch.text.utilitySpeed, "fast");
+  const agent = harnessPatch({ choice: "harness", apiKey: "", model: "", utilityModel: "", fast: true, harness: { id: "codex", model: "gpt-6-sol", utilityModel: "" } });
+  assert.equal(agent.patch.harness.speed, "fast");
+  assert.equal(agent.patch.harness.utilitySpeed, "fast");
+  const notTrue = harnessPatch({ choice: "harness", apiKey: "", model: "", utilityModel: "", fast: "yes", harness: { id: "claude", model: "opus", utilityModel: "" } });
+  assert.equal(notTrue.patch.harness.speed, "", "only a real true turns it on");
+});
+
+test("the saved Fast choice is read back for the key and for an agent", () => {
+  assert.equal(savedAiFrom(openAiConfig({ customModel: "gpt-6-sol", hasCustomApiKey: true, speed: "fast" })).fast, true);
+  assert.equal(savedAiFrom(openAiConfig({ customModel: "gpt-6-sol", hasCustomApiKey: true, speed: "" })).fast, undefined);
+  const agent = savedAiFrom({ config: { text: { provider: "harness" }, harness: { id: "claude", model: "opus", utilityModel: "", speed: "fast" } } });
+  assert.equal(agent.fast, true);
+});
+
+test("an agent runs Fast on Claude Code's Opus models and where Codex lists the tier", () => {
+  const codexModels = [{ id: "gpt-6-sol", fast: true }, { id: "gpt-5.4", fast: false }];
+  assert.equal(harnessFastModel("codex", "gpt-6-sol", codexModels), true);
+  assert.equal(harnessFastModel("codex", "gpt-5.4", codexModels), false);
+  assert.equal(harnessFastModel("codex", "", codexModels), false, "the program's own default is not known to have it");
+  assert.equal(harnessFastModel("claude", "opus", []), true);
+  assert.equal(harnessFastModel("claude", "sonnet", []), false);
+  assert.equal(harnessFastModel("opencode", "gpt-6-sol", codexModels), false);
+  assert.equal(harnessFastModel("grok", "grok-5", []), false);
+});
+
+// The door offers Fast by these rules; the device's server decides by its
+// own before every call. The two must agree, or the door offers a Fast the
+// server never asks for (or hides one it would).
+test("the door's Fast models are the server's", { skip: !fs.existsSync(serverSpeedTier) }, async () => {
+  const server = await import(pathToFileURL(serverSpeedTier).href);
+  const names = [
+    "gpt-6-sol", "GPT-6-Luna", "gpt-6-astra", "gpt-6.1-sol", "gpt-5.6", "gpt-5.6-mini", "gpt-5.5", "gpt-5.1",
+    "gpt-4o", "ft:gpt-6-sol:org", "gpt-6", "o4-mini", "", "  gpt-6-sol  ",
+  ];
+  for (const name of names) {
+    assert.equal(openAiFastModel(name), server.openAiFastModel(name), `OpenAI: ${JSON.stringify(name)}`);
+  }
+  const claude = [
+    "opus", "Opus", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-8-20260301", "opus[1m]",
+    "claude-opus-4-7", "sonnet", "claude-sonnet-5-5", "haiku", "",
+  ];
+  for (const name of claude) {
+    assert.equal(claudeFastModel(name), server.claudeFastModel(name), `Claude: ${JSON.stringify(name)}`);
+  }
+  assert.equal(FAST_COST_NOTE, server.FAST_COST_NOTE, "the price is said in the same words");
 });

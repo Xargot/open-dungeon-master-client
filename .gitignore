@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 release/
 # The bundled server payload is produced by scripts/bundle-server.mjs from a

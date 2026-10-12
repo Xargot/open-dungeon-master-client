@@ -206,6 +206,8 @@ export function show(layout: Layout, ...nodes: (HTMLElement | null)[]): void {
   page.classList.toggle("game", layout === "game");
   page.classList.toggle("title", layout === "title");
   root.classList.toggle("immersive", layout === "game");
+  // The title screen and a world fill the window edge to edge.
+  root.classList.toggle("bleed", layout === "game" || layout === "title");
   if (layout === "game" || layout === "title") page.replaceChildren(screen);
   else page.replaceChildren(topbar(), screen);
   renderDrawer();

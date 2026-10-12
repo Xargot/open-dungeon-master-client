@@ -9,6 +9,7 @@
 // bundlers (scripts/bundle-server.mjs for the desktop payload and
 // mobile/scripts/bundle-android-payload.mjs for the APK) call this, so the
 // keep-list lives in one place.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -68,7 +69,55 @@ export function pruneServerPayload(dir) {
   if (dead) dropped.push(`source maps, type declarations, TypeScript sources, readmes and test folders (${dead})`);
   const tracks = pruneAmbienceLibrary(dir);
   if (tracks) dropped.push(`public/ambience (${tracks} tracks; the admin panel installs the sound pack)`);
+  const folded = dedupeChunks(dir);
+  if (folded.count) dropped.push(`.next/server/chunks duplicates (${folded.count} copies, ${(folded.bytes / 1048576).toFixed(1)} MB)`);
   return dropped.sort();
+}
+
+// Turbopack writes the modules a route shares with other routes into one
+// merged chunk per route and names it after the route, so the same bytes
+// land under many names: server 0.26.3's build carried 65 copies of one
+// 1.1 MB chunk and 84 MB of such copies in all, which the APK and every
+// installer then compressed and shipped. The server runtime loads a chunk
+// with require() and installs only the module ids it has not seen yet, so a
+// copy can hand over the first file's exports instead of carrying them again.
+// Only the CommonJS chunk form is folded (the browser-style chunks register
+// themselves differently); the trailing source-map comment names the file
+// and is the one thing that differs between copies, so it and any trailing
+// newline are left out of the comparison. The first name in sorted order keeps the bytes. Returns how
+// many copies were folded and the bytes they gave up.
+const CJS_CHUNK = /^module\.exports=/;
+const SOURCE_MAP_COMMENT = /\n*\/\/# sourceMappingURL=[^\n]*\n?$/;
+
+export function dedupeChunks(dir) {
+  const chunks = path.join(dir, ".next", "server", "chunks");
+  const files = [];
+  walk(chunks, (full, entry) => {
+    if (entry.isFile() && entry.name.endsWith(".js")) files.push(full);
+    return false;
+  });
+  files.sort();
+  const kept = new Map();
+  let count = 0;
+  let bytes = 0;
+  for (const file of files) {
+    const source = fs.readFileSync(file, "utf8");
+    if (!CJS_CHUNK.test(source)) continue;
+    const body = source.replace(SOURCE_MAP_COMMENT, "").trimEnd();
+    const key = `${body.length}:${crypto.createHash("sha256").update(body).digest("hex")}`;
+    const first = kept.get(key);
+    if (!first) {
+      kept.set(key, file);
+      continue;
+    }
+    let target = path.relative(path.dirname(file), first).split(path.sep).join("/");
+    if (!target.startsWith(".")) target = `./${target}`;
+    const stub = `module.exports=require(${JSON.stringify(target)});\n`;
+    fs.writeFileSync(file, stub);
+    count += 1;
+    bytes += Buffer.byteLength(source) - Buffer.byteLength(stub);
+  }
+  return { count, bytes };
 }
 
 // The sound library (public/ambience): some ninety open-licensed recordings

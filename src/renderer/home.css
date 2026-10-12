@@ -30,6 +30,7 @@
   --ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-drift: cubic-bezier(0.45, 0, 0.55, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-instant: 90ms;
   --dur-quick: 180ms;
   --dur-move: 260ms;
   --dur-beat: 420ms;
@@ -101,6 +102,12 @@
 .screen.still .tt-backdrop,
 .screen.still .tt-enter-sheen { animation: none; opacity: 1; transform: none; }
 .screen.still .tt-rule { transform: none; }
+.screen.still .tt-title-face,
+.screen.still .tt-menu-item .tt-menu-diamond,
+.screen.still .tt-bracket,
+.screen.still .tt-recap-text,
+.screen.still .tt-mono,
+.screen.still .tt-slot-cell { animation: none; }
 
 /* ---------- status dots ---------- */
 
@@ -120,6 +127,10 @@
    The title screen
    ======================================================================== */
 
+/* The title screen and a world own the whole width, the way the server's
+   pages do in a browser: the gutter wide windows give the other screens
+   (controls.css) would frame the painting and the table in bands. */
+#app.bleed { padding-left: 0; padding-right: 0; }
 .page.title { padding: 0; }
 .screen.title {
   position: relative;
@@ -143,6 +154,10 @@
   z-index: -1;
   background: #0a0817;
   animation: tt-dolly 2200ms var(--ease-settle) backwards;
+  /* The seam: the painting dissolves through a mask into whatever the
+     page draws below it, the starfield at night and the parchment by day. */
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 13rem), transparent);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 13rem), transparent);
 }
 .tt-art {
   position: absolute;
@@ -267,10 +282,11 @@
   letter-spacing: 0.02em;
   text-wrap: balance;
 }
-.tt-title.tt-reveal { animation-name: tt-title-in; animation-duration: var(--dur-scene); }
+.tt-title.tt-reveal { animation: tt-title-in var(--dur-scene) var(--ease-settle) backwards; }
 @keyframes tt-title-in {
-  from { opacity: 0; transform: translateY(18px); filter: blur(6px); }
-  to { opacity: 1; transform: none; filter: blur(0); }
+  from { opacity: 0; transform: translateY(18px) scale(1.015); filter: blur(8px); }
+  60% { filter: blur(0); }
+  to { opacity: 1; transform: none; filter: none; }
 }
 .tt-title-sm { font-size: clamp(1.6rem, 3vw, 2.6rem); }
 .tt-title-face,
@@ -280,6 +296,20 @@
   background-clip: text;
   color: transparent;
   filter: drop-shadow(0 1px 0 rgba(92, 64, 12, 0.9)) drop-shadow(0 2px 0 rgba(58, 40, 8, 0.7)) drop-shadow(0 10px 24px rgba(212, 171, 58, 0.28));
+}
+/* Once the title has risen, a sheen crosses the gilt. */
+.tt-title-face {
+  background-image:
+    linear-gradient(105deg, transparent 42%, rgba(255, 250, 232, 0.95) 50%, transparent 58%),
+    linear-gradient(180deg, #fff6da 0%, #f4e0a6 28%, #e3c15c 58%, #b8922a 100%);
+  background-size: 250% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  background-position: 150% 0, 0 0;
+  animation: tt-title-sheen 1400ms var(--ease-settle) 1000ms backwards;
+}
+@keyframes tt-title-sheen {
+  from { background-position: 150% 0, 0 0; }
+  to { background-position: -60% 0, 0 0; }
 }
 .tt-chapter {
   display: flex;
@@ -363,6 +393,11 @@
   margin-top: 0.4rem;
 }
 .tt-actions .badge { align-self: center; }
+.tt-actions.tt-reveal { animation: tt-door-in var(--dur-beat) var(--ease-spring) backwards; }
+@keyframes tt-door-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.94); }
+  to { opacity: 1; transform: none; }
+}
 
 /* The door in: the banner's gold, lit from within, a sheen that crosses
    on hover and a glow that breathes while the screen waits. */
@@ -487,11 +522,36 @@
   gap: 12px;
   padding: 24px 26px;
 }
-.tt-recap.tt-reveal { animation-name: tt-recap-in; }
+/* The recap's arrival: it slides in, its brackets draw, the words ink in
+   from the top and the time follows. */
+.tt-recap.tt-reveal { animation: tt-recap-in var(--dur-scene) var(--ease-settle) backwards; }
 @keyframes tt-recap-in {
-  from { opacity: 0; transform: translateX(24px); }
+  from { opacity: 0; transform: translateX(28px); }
   to { opacity: 1; transform: none; }
 }
+.tt-recap .tt-bracket { animation: tt-bracket-draw var(--dur-beat) var(--ease-settle) 1020ms backwards; }
+.tt-recap .tt-bracket-tl { transform-origin: 0 0; }
+.tt-recap .tt-bracket-br { transform-origin: 100% 100%; }
+@keyframes tt-bracket-draw {
+  from { opacity: 0; transform: scale(0); }
+  to { opacity: 1; transform: none; }
+}
+.tt-recap .tt-recap-text {
+  -webkit-mask-image: linear-gradient(180deg, #000 45%, transparent 55%);
+  mask-image: linear-gradient(180deg, #000 45%, transparent 55%);
+  -webkit-mask-size: 100% 240%;
+  mask-size: 100% 240%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: 0 0;
+  mask-position: 0 0;
+  animation: tt-ink 1100ms var(--ease-drift) 880ms backwards;
+}
+@keyframes tt-ink {
+  from { -webkit-mask-position: 0 100%; mask-position: 0 100%; }
+  to { -webkit-mask-position: 0 0; mask-position: 0 0; }
+}
+.tt-recap .tt-mono { animation: tt-rise var(--dur-move) var(--ease-settle) 1500ms backwards; }
 .tt-recap-text {
   margin: 0;
   font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
@@ -541,11 +601,28 @@
   text-align: left;
   transition: color var(--dur-quick) var(--ease-snap), text-shadow var(--dur-move) var(--ease-snap), transform var(--dur-move) var(--ease-snap);
 }
-.tt-menu-item.tt-reveal { animation-name: tt-menu-in; }
+.tt-menu-item.tt-reveal { animation: tt-menu-in var(--dur-beat) var(--ease-settle) backwards; }
 @keyframes tt-menu-in {
   from { opacity: 0; transform: translateX(-16px); }
   to { opacity: 1; transform: none; }
 }
+/* Each diamond spins in with its line. */
+.tt-menu-item.tt-reveal .tt-menu-diamond {
+  animation: tt-diamond-in var(--dur-beat) var(--ease-spring) backwards;
+  animation-delay: inherit;
+}
+@keyframes tt-diamond-in {
+  from { opacity: 0; transform: rotate(-135deg) scale(0); }
+  to { opacity: 1; transform: rotate(45deg); }
+}
+/* A gold underline draws under the lit line. */
+.tt-menu-label {
+  padding-bottom: 2px;
+  background: linear-gradient(90deg, var(--tt-gold), rgba(212, 171, 58, 0)) left bottom / 0% 1px no-repeat;
+  transition: background-size var(--dur-move) var(--ease-settle);
+}
+.tt-menu-item:is(:hover, :focus-visible) .tt-menu-label,
+.pad-active .tt-menu-item:focus .tt-menu-label { background-size: 100% 1px; }
 .tt-menu-item:hover,
 .tt-menu-item:focus-visible,
 .pad-active .tt-menu-item:focus {
@@ -554,7 +631,12 @@
   transform: translateX(6px);
   outline: none;
 }
-.tt-menu-item:active { transform: translateX(6px) scale(0.98); }
+.tt-menu-item:active { transform: translateX(9px) scale(0.98); transition-duration: var(--dur-instant); }
+.tt-menu-item:active .tt-menu-diamond {
+  background: var(--tt-gold-pale);
+  transform: rotate(405deg) scale(0.9);
+  box-shadow: 0 0 16px rgba(244, 224, 166, 0.9);
+}
 .tt-menu-item:disabled { opacity: 0.6; }
 .tt-menu-diamond {
   width: 7px;
@@ -572,7 +654,13 @@
   transform: rotate(225deg) scale(1.25);
   box-shadow: 0 0 10px rgba(212, 171, 58, 0.7);
 }
+/* Beside the line, out of its flow: the glyph never adds to a row's height
+   or to what the pointer can hit. */
 .tt-menu-glyph {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  margin: -18px 0 0 14px;
   display: inline-flex;
   opacity: 0;
   transform: translateX(-8px) scale(0.8);
@@ -819,9 +907,46 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform 1.2s var(--ease-drift);
+  filter: brightness(0.9) saturate(0.95);
+  transition: transform 1.2s var(--ease-drift), filter var(--dur-beat) var(--ease-snap);
 }
-.tt-slot:hover .tt-slot-art img { transform: scale(1.06); }
+.tt-slot:hover:not(:disabled) .tt-slot-art img { transform: scale(1.06); filter: none; }
+.tt-slot:active:not(:disabled) .tt-slot-art img { transform: scale(1.03); transition-duration: var(--dur-quick); }
+/* The art under glass: a vignette and a floor shade over the picture, and
+   a sheen that crosses it under the pointer. */
+.tt-slot-art { isolation: isolate; }
+.tt-slot-art::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 18px rgba(4, 2, 12, 0.55);
+  background: linear-gradient(180deg, transparent 55%, rgba(10, 8, 23, 0.45));
+}
+.tt-slot-art::after {
+  content: "";
+  position: absolute;
+  inset: -20% auto -20% -60%;
+  width: 40%;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent, rgba(255, 246, 218, 0.4) 50%, transparent);
+  transform: skewX(-18deg);
+  opacity: 0;
+}
+.tt-slot:hover:not(:disabled) .tt-slot-art::after { animation: tt-sheen 900ms var(--ease-settle); }
+/* The slots rise in one after another once the title has settled. */
+.tt-slot-row > .tt-slot-cell { animation: tt-slot-in var(--dur-beat) var(--ease-settle) 980ms backwards; }
+.tt-slot-row > .tt-slot-cell:nth-child(2) { animation-delay: 1050ms; }
+.tt-slot-row > .tt-slot-cell:nth-child(3) { animation-delay: 1120ms; }
+.tt-slot-row > .tt-slot-cell:nth-child(4) { animation-delay: 1190ms; }
+.tt-slot-row > .tt-slot-cell:nth-child(n + 5) { animation-delay: 1260ms; }
+@keyframes tt-slot-in {
+  from { opacity: 0; transform: translateY(18px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
 .tt-slot-badge {
   position: absolute;
   left: 6px;
@@ -836,9 +961,23 @@
   letter-spacing: 0.2em;
   text-transform: uppercase;
   color: #ecd287;
+  z-index: 3;
+  transition: border-color var(--dur-move) var(--ease-snap), box-shadow var(--dur-move) var(--ease-snap);
 }
+.tt-slot:hover:not(:disabled) .tt-slot-badge { border-color: rgba(212, 171, 58, 0.7); box-shadow: 0 0 10px rgba(212, 171, 58, 0.35); }
 .tt-slot-badge-lobby { color: #9fd3ff; border-color: rgba(125, 190, 255, 0.4); }
 .tt-slot-badge-ended { color: #aeaac6; border-color: rgba(107, 99, 148, 0.5); }
+/* A table in play carries a lit lamp in its badge. */
+.tt-slot-badge-active { display: inline-flex; align-items: center; gap: 5px; }
+.tt-slot-badge-active::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  color: #e3c15c;
+  background: #e3c15c;
+  animation: tt-lamp 2.6s ease-in-out infinite;
+}
 .tt-slot-title {
   padding: 0 2px;
   font-family: var(--font-display);
@@ -851,7 +990,10 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  transition: color var(--dur-quick) var(--ease-snap);
 }
+.tt-slot:hover:not(:disabled) .tt-slot-title,
+.tt-slot:focus-visible .tt-slot-title { color: #fff6da; }
 .tt-slot-line {
   padding: 0 2px;
   margin-top: -2px;
@@ -932,8 +1074,11 @@
   gap: 4px;
   scroll-margin-top: 1.5rem;
 }
+/* The boxes and Join on one line, as on the website; the row direction
+   is spelled out because the shell's form rule (controls.css) stacks. */
 .tt-join-form {
   display: flex;
+  flex-direction: row;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
@@ -1094,7 +1239,11 @@
   .tt-slot-cell { scroll-snap-align: start; }
   .tt-slot-cell:first-child { margin-left: 0; }
   .tt-slots-empty, .tt-slots-note { text-align: left; }
-  .tt-backdrop { height: min(100dvh, 860px); }
+  .tt-backdrop {
+    height: min(100dvh, 860px);
+    -webkit-mask-image: linear-gradient(180deg, #000 70%, transparent);
+    mask-image: linear-gradient(180deg, #000 70%, transparent);
+  }
   .tt-corner-bl,
   .tt-corner-br { display: none; }
   .tt-scrim-side { background: linear-gradient(180deg, rgba(10, 8, 23, 0.55) 0%, rgba(13, 11, 28, 0.35) 40%, rgba(10, 8, 23, 0.8) 100%); }
@@ -1154,6 +1303,7 @@
   .tt-title-block, .tt-recap, .tt-slots, .tt-menu, .tt-status { order: 0; }
   .tt-stage-right { align-items: stretch; }
   .tt-recap { width: 100%; }
+  .tt-slots { align-items: flex-start; }
   .tt-slot-cell:first-child { margin-left: 0; }
 }
 /* A flip opened flat: the painting and the title above the hinge, the
@@ -1173,12 +1323,31 @@
   .tt-enter::before, .tt-enter-sheen { animation: none; }
   .tt-lamp { animation: none !important; }
   .tt-menu-item, .tt-menu-diamond, .tt-menu-glyph, .tt-slot-art img, .tt-slot-new-plus, .tt-face, .tt-slot, .icon-btn, .tt-medallion { transition: none; }
+  .tt-title-face,
+  .tt-enter:is(:hover, :focus-visible) .tt-enter-sheen,
+  .tt-eyebrow.tt-reveal,
+  .tt-title.tt-reveal,
+  .tt-actions.tt-reveal,
+  .tt-recap.tt-reveal,
+  .tt-menu-item.tt-reveal,
+  .tt-menu-item.tt-reveal .tt-menu-diamond,
+  .tt-recap .tt-bracket,
+  .tt-recap .tt-recap-text,
+  .tt-recap .tt-mono,
+  .tt-slot-row > .tt-slot-cell,
+  .tt-slot-row > .tt-slot-cell:nth-child(n),
+  .tt-slot:hover .tt-slot-art::after,
+  .tt-slot-badge-active::before { animation: none; }
+  .tt-recap .tt-recap-text { -webkit-mask-image: none; mask-image: none; }
+  .tt-menu-label, .tt-slot-title, .tt-slot-badge { transition: none; }
 }
 html[data-effects="low"] .tt-art,
 html[data-effects="low"] .tt-art-in,
 html[data-effects="low"] .tt-backdrop { animation: none; }
 html[data-effects="low"] .tt-stars { animation: none; }
 html[data-effects="low"] .tt-enter::before { animation: none; }
+html[data-effects="low"] .tt-slot-badge-active::before { animation: none; }
+html[data-effects="low"] .tt-title.tt-reveal { animation-name: tt-rise; }
 html[data-effects="low"] .tt-panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
 
 /* The day theme: the painting stays night; the shelf below follows the
@@ -1195,7 +1364,11 @@ html[data-theme="light"] .tt-below .tt-sigil-box { color: var(--ink-100); border
 html[data-theme="light"] .tt-below .tt-sigil-box-lit { background: rgba(138, 101, 20, 0.14); }
 html[data-theme="light"] .tt-below .tt-ghost { color: var(--gold-400); border-color: rgba(138, 101, 20, 0.45); background: rgba(255, 252, 245, 0.7); }
 html[data-theme="light"] .tt-below .tt-ghost:hover { background: rgba(255, 252, 245, 1); }
-html[data-theme="light"] .tt-backdrop { height: calc(100dvh + 7rem); }
+html[data-theme="light"] .tt-backdrop {
+  height: calc(100dvh + 7rem);
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 7rem), transparent);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 7rem), transparent);
+}
 html[data-theme="light"] .tt-below { padding-top: 8rem; }
 html[data-theme="light"] .tt-page > .topbar.tt-header .icon-btn { color: #c9c6db; }
 html[data-theme="light"] .tt-page > .topbar.tt-header .wordmark { color: var(--tt-gold); }

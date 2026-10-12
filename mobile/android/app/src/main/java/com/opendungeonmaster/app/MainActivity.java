@@ -4,12 +4,17 @@ import android.graphics.Color;
 import android.os.Bundle;
 import androidx.activity.EdgeToEdge;
 import androidx.activity.SystemBarStyle;
+import androidx.core.splashscreen.SplashScreen;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        // The launch theme's splash (the d20 on the night color), then the
+        // app's own theme. Without this the activity kept the launch theme
+        // for its whole life.
+        SplashScreen.installSplashScreen(this);
         // Edge to edge on every Android version, not only the 15+ ones that
         // enforce it: the window draws behind transparent system bars with
         // light icons on them (the app is night-only), and Capacitor's

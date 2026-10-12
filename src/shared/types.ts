@@ -71,6 +71,9 @@ export interface AiSetup {
   // "harness": an agent program already installed and signed in on this
   // computer (Claude Code, Codex, opencode, Grok Build) narrates instead.
   harness?: { id: HarnessId; model: string; utilityModel: string };
+  // The provider's paid Fast tier (server issue 255), for the models that
+  // have one; the server asks for it only where the model does.
+  fast?: boolean;
 }
 
 export type HarnessId = "claude" | "codex" | "opencode" | "grok";
@@ -84,7 +87,8 @@ export interface HarnessCard {
   installed: boolean;
   version?: string;
   auth: { state: "ready" | "signed-out" | "unknown"; plan?: string; account?: string };
-  models: Array<{ id: string; label: string; cheap?: boolean }>;
+  // fast: Codex lists a Fast tier for the model on this sign-in.
+  models: Array<{ id: string; label: string; cheap?: boolean; fast?: boolean }>;
   lockdown: "removed" | "contained";
   lockdownProven: boolean;
   nativeImages: "no" | "untested" | "verified";
@@ -95,7 +99,7 @@ export interface HarnessCard {
 }
 
 export type HarnessStatusResult =
-  | { ok: true; statuses: HarnessCard[]; current: { id: string; model: string; utilityModel: string } }
+  | { ok: true; statuses: HarnessCard[]; current: { id: string; model: string; utilityModel: string; fast?: boolean } }
   | { ok: false; error: string };
 
 // What Story AI already holds for this device, so the OpenAI form can show
@@ -107,6 +111,8 @@ export interface SavedAi {
   utilityModel: string;
   // Set when the device narrates with an agent program.
   harnessId?: string;
+  // The storyteller runs at the provider's Fast tier.
+  fast?: boolean;
 }
 
 // firstSetup: the shell just auto-provisioned the local profile, so the
