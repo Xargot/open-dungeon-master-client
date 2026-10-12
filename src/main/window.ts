@@ -192,7 +192,16 @@ export class ShellWindow {
           },
           { type: "separator" },
           { role: "reload" },
-          { role: "toggleDevTools" },
+          {
+            label: "Developer Tools",
+            accelerator: "CmdOrCtrl+Shift+I",
+            click: () => {
+              const contents = this.view?.webContents ?? this.win?.webContents;
+              if (!contents) return;
+              if (contents.isDevToolsOpened()) contents.closeDevTools();
+              else contents.openDevTools({ mode: "detach", activate: true });
+            },
+          },
           { type: "separator" },
           { role: "resetZoom" },
           { role: "zoomIn" },
