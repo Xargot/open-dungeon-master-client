@@ -45,6 +45,20 @@ function isRootRelative(url: string): boolean {
   return url.startsWith("/") && !url.startsWith("//");
 }
 
+// Server pages sometimes use root-relative artwork in inline CSS instead of
+// an <img> (the campaign-setting cards use background-image). In Electron's
+// file:// renderer those paths point at the local disk root, so redirect
+// assets the shell bundled to their local copies just as fixMedia does.
+function fixBackgroundImage(element: Element): void {
+  if (!(element instanceof HTMLElement) || !element.style.backgroundImage) return;
+  const value = element.style.backgroundImage;
+  const fixed = value.replace(/url\(\s*(["']?)(\/[^"')]+)\1\s*\)/g, (match, _quote: string, hostPath: string) => {
+    const local = localAsset(hostPath);
+    return local ? `url("${local}")` : match;
+  });
+  if (fixed !== value) element.style.backgroundImage = fixed;
+}
+
 // A page's fetch, whether it passes a string, a URL or a Request. A Request
 // carries an absolute address resolved against the app's own page, so the
 // page's origin counts as "the host" too; the method and body ride along.
@@ -272,7 +286,9 @@ function patchMediaSetters(): void {
 
 function scan(root: Node): void {
   if (root instanceof Element) {
+    fixBackgroundImage(root);
     if (root.matches(MEDIA_SELECTOR)) fixMedia(root);
+    for (const node of root.querySelectorAll("[style]")) fixBackgroundImage(node);
     for (const node of root.querySelectorAll(MEDIA_SELECTOR)) fixMedia(node);
   }
 }
@@ -282,6 +298,9 @@ function scan(root: Node): void {
 function onMutations(records: MutationRecord[]): void {
   const added = new Set<Node>();
   for (const record of records) {
+    if (record.type === "attributes" && record.attributeName === "style" && record.target instanceof Element) {
+      fixBackgroundImage(record.target);
+    }
     if (record.type === "attributes" && record.target instanceof Element && record.target.matches(MEDIA_SELECTOR)) {
       fixMedia(record.target);
     }
@@ -411,7 +430,7 @@ export function installRuntime(client: HostClient): void {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: [...MEDIA_ATTRS, ...SVG_IMAGE_ATTRS],
+    attributeFilter: [...MEDIA_ATTRS, ...SVG_IMAGE_ATTRS, "style"],
   });
   scan(document.body);
 }
