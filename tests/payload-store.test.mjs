@@ -8,9 +8,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { MARKER, PayloadStore } from "../dist/main/payload-store.js";
+import { PRESERVED } from "../dist/main/local-server.js";
+import { MARKER, PayloadStore, lockPatience } from "../dist/main/payload-store.js";
 
-const PRESERVED = ["public/uploads", "public/generated", "public/generated-audio", "public/ambience", "models"];
+// The retries that wait out a Windows file lock, shortened for the tests
+// below that stand in for one with a folder nobody may write into.
+lockPatience.attempts = 30;
+lockPatience.delayMs = 20;
+const root = typeof process.getuid === "function" && process.getuid() === 0;
+const noChmod = process.platform === "win32" ? "a folder nobody may write into cannot be made with chmod on Windows" : false;
 
 function write(root, files) {
   for (const [rel, text] of Object.entries(files)) {
@@ -128,6 +134,68 @@ test("an unpack without a marker is dropped, and fills only gaps in the live tre
     assert.equal(read(path.join(run, "public/uploads/b.png")), "only here");
     assert.ok(!fs.existsSync(store.fresh));
   } finally {
+    cleanup();
+  }
+});
+
+test("the installed world packs and the rest of the server's data folder survive an upgrade", async () => {
+  const { run, store, cleanup } = world();
+  try {
+    write(run, { ...payload("1"), "data/worlds/hollow_marsh.json": '{"id":"hollow_marsh"}', "data/ambience-lock.json": "{}" });
+    await store.upgrade(async (dir) => write(dir, payload("2")));
+    assert.equal(read(path.join(run, "server.js")), "2");
+    assert.equal(read(path.join(run, "data/worlds/hollow_marsh.json")), '{"id":"hollow_marsh"}');
+    assert.equal(read(path.join(run, "data/ambience-lock.json")), "{}");
+  } finally {
+    cleanup();
+  }
+});
+
+test("the Android shell carries the same folders across an upgrade as the desktop", () => {
+  const java = fs.readFileSync(
+    new URL("../mobile/android/app/src/main/java/com/opendungeonmaster/app/PayloadStore.java", import.meta.url),
+    "utf8",
+  );
+  const block = java.match(/PRESERVED = \{([^}]*)\}/);
+  assert.ok(block, "PayloadStore.java names its PRESERVED folders");
+  assert.deepEqual([...block[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]), PRESERVED);
+});
+
+test("a swap waits out a lock on the tree, as Windows holds one for a moment", { skip: noChmod }, async () => {
+  const { dir, run, store, cleanup } = world();
+  try {
+    write(run, { ...payload("1"), "public/uploads/face.png": "face" });
+    await store.upgrade(async (fresh) => {
+      write(fresh, payload("2"));
+      // Renaming the live tree aside needs the parent writable; take that
+      // away for the swap's first tries and give it back while it waits.
+      fs.chmodSync(dir, 0o500);
+      setTimeout(() => fs.chmodSync(dir, 0o700), 150);
+    });
+    assert.equal(read(path.join(run, "server.js")), "2");
+    assert.equal(read(path.join(run, "public/uploads/face.png")), "face");
+    for (const stray of [store.fresh, store.old, store.keep]) assert.ok(!fs.existsSync(stray), stray);
+  } finally {
+    fs.chmodSync(dir, 0o700);
+    cleanup();
+  }
+});
+
+test("a replaced tree that cannot be removed yet is left for the next start, not a failed one", { skip: noChmod }, async () => {
+  const { run, store, cleanup } = world();
+  const locked = path.join(store.old, "locked");
+  try {
+    write(run, payload("2"));
+    write(locked, { "chunk.js": "old" });
+    fs.chmodSync(locked, 0o500);
+    await store.recover();
+    assert.equal(read(path.join(run, "server.js")), "2", "the live tree is untouched");
+    if (!root) assert.ok(fs.existsSync(store.old), "the old tree waits for a start that can remove it");
+    fs.chmodSync(locked, 0o700);
+    await store.recover();
+    assert.ok(!fs.existsSync(store.old));
+  } finally {
+    if (fs.existsSync(locked)) fs.chmodSync(locked, 0o700);
     cleanup();
   }
 });

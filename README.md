@@ -195,6 +195,49 @@ Where it can, it installs the update itself and relaunches:
 
 On Android, install the new APK over the old one; your world and its data are kept.
 
+## Troubleshooting
+
+Your world lives in the app's data folder, apart from the program itself, so
+an update or a reinstall never touches it:
+
+- **Windows:** `%APPDATA%\open-dungeon-master-client`
+- **macOS:** `~/Library/Application Support/open-dungeon-master-client`
+- **Linux:** `~/.config/open-dungeon-master-client` (a flatpak keeps it under
+  `~/.var/app/com.opendungeonmaster.client/config/`)
+- **Android:** the app's private storage, which uninstalling the app removes.
+
+Inside it, `data/` holds the world's database and its key, and `local-server/`
+the server files the app unpacked from its own copy, with your uploads,
+paintings, narration and installed world packs beside them. An update replaces
+the server files and carries those folders across.
+
+Settings has a **Troubleshooting** card for the rest, and nothing on it
+deletes anything you made:
+
+- **Check files** reads every unpacked server file against the ones the app
+  shipped with and says which are missing or changed.
+- **Repair** unpacks the server files again, keeping your campaigns, pictures
+  and installed worlds, and wakes your world again if it was awake. The app
+  does this once on its own when your world fails to start and the check finds
+  the files damaged; the title screen offers it too when the world will not
+  wake.
+- **Clear cached files** drops what the app cached from servers; sign-ins,
+  saved servers and your world stay.
+- **Copy summary** puts a short report on the clipboard for a bug report:
+  versions, the state of your world and which server files are wrong. It
+  names no accounts, keys or campaign text, and shortens paths to `~`.
+- **Show logs** opens the folder with `local-server.log` and `tunnel.log`.
+  Read a log before sharing it; the world's own output goes there.
+- **Reset the app** is the one row that takes your world out of the app's
+  hands, so it sits last, asks you to type `RESET`, and still deletes nothing:
+  the app stops your world, restarts, and on the way back in renames its data
+  folder to `open-dungeon-master-client.set-aside-<date>` beside the old place
+  and starts from an empty one. Local AI engines you installed stay. To bring
+  the old world back, close the app, remove the new data folder and rename the
+  set-aside one back; to let it go, remove the set-aside folder yourself. On
+  Android the system's own Clear storage for the app does the same, and that
+  one does delete.
+
 ## Building from source
 
 ### Requirements

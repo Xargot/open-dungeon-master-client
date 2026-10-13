@@ -7,6 +7,7 @@ import { joinLinkFromArgv, parseJoinLink, type JoinLink } from "../shared/deep-l
 import { LocalAiManager } from "./local-ai/manager";
 import { LocalServer } from "./local-server";
 import { registerIpc, type ShellIpc } from "./ipc";
+import { applyPendingReset } from "./reset";
 import { LOCAL_SERVER_ID, ServerStore, type TokenCrypt } from "./servers";
 import { storyMemoryEnv, storyMemorySupported } from "../shared/story-memory";
 import { QuickTunnel } from "./tunnel";
@@ -86,6 +87,12 @@ function main(): void {
   });
 
   void app.whenReady().then(async () => {
+    // A reset the previous run asked for (src/main/reset.ts) comes first,
+    // before the registry, the world or any session opens the folder.
+    const reset = await applyPendingReset(app.getPath("userData")).catch((err: unknown) => {
+      console.error("[reset] the app's data could not be set aside", err);
+      return null;
+    });
     const store = new ServerStore(path.join(app.getPath("userData"), "servers.json"), makeCrypt());
     const payloadDir = app.isPackaged
       ? path.join(process.resourcesPath, "server")
@@ -141,6 +148,32 @@ function main(): void {
       }
       return false;
     };
+    // The new binary starts once this process is gone: from an AppImage
+    // the mount goes with the process, so the path must be the file. A
+    // flatpak is started again by the host, which waits for this
+    // sandbox to close; the app quits once the host has the command.
+    // A Steam Deck launch option goes along either way. The updater and
+    // the reset (Settings, Troubleshooting) both leave this way.
+    const relaunch = (execPath?: string): void => {
+      if (!flatpak) {
+        app.relaunch(execPath ? { execPath, args: deckLaunchArgs(process.argv) } : undefined);
+        app.quit();
+        return;
+      }
+      const [command, args] = flatpakRelaunchCommand(flatpak.id, deckLaunchArgs(process.argv));
+      const child = spawn(command, args, { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+      let quitting = false;
+      const quit = (): void => {
+        if (quitting) return;
+        quitting = true;
+        app.quit();
+      };
+      child.stdout.once("data", quit);
+      child.once("error", quit);
+      child.once("exit", quit);
+      setTimeout(quit, 5_000);
+      child.unref();
+    };
     const updater = new Updater(
       detectInstallKind(process.env, process.execPath, process.platform, app.isPackaged, packageType),
       app.getVersion(),
@@ -180,31 +213,7 @@ function main(): void {
             child.on("error", reject);
             child.on("close", (code) => resolve({ code: code ?? -1, stderr }));
           }),
-        // The new binary starts once this process is gone: from an AppImage
-        // the mount goes with the process, so the path must be the file. A
-        // flatpak is started again by the host, which waits for this
-        // sandbox to close; the app quits once the host has the command.
-        // A Steam Deck launch option goes along either way.
-        relaunch: (execPath) => {
-          if (!flatpak) {
-            app.relaunch(execPath ? { execPath, args: deckLaunchArgs(process.argv) } : undefined);
-            app.quit();
-            return;
-          }
-          const [command, args] = flatpakRelaunchCommand(flatpak.id, deckLaunchArgs(process.argv));
-          const child = spawn(command, args, { detached: true, stdio: ["ignore", "pipe", "ignore"] });
-          let quitting = false;
-          const quit = (): void => {
-            if (quitting) return;
-            quitting = true;
-            app.quit();
-          };
-          child.stdout.once("data", quit);
-          child.once("error", quit);
-          child.once("exit", quit);
-          setTimeout(quit, 5_000);
-          child.unref();
-        },
+        relaunch,
         flatpak,
       },
     );
@@ -239,7 +248,7 @@ function main(): void {
         origin === local.origin ? store.get(LOCAL_SERVER_ID) : store.findByOrigin(origin);
       if (entry) store.clearToken(entry.id);
     });
-    ipc = registerIpc({ store, window: win, local, tunnel, localAi, updater, deck });
+    ipc = registerIpc({ store, window: win, local, tunnel, localAi, updater, deck, relaunch: () => relaunch(), reset });
     // Not before the page listens: an answer sent into a loading window was
     // lost, and the player never saw the popup.
     updater.checkOnStartup(win.whenPageReady());

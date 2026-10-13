@@ -18,17 +18,13 @@ export function openAiFastModel(model: string): boolean {
   return !name.startsWith("ft:") && /^(gpt-6(\.\d+)?|gpt-5\.6)(-[a-z0-9.-]+)?$/.test(name);
 }
 
-export function claudeFastModel(model: string): boolean {
-  const name = model.trim().toLowerCase().replace(/\[1m\]$/, "");
-  return name === "opus" || /^claude-opus-(5-5|5|4-8)(-\d{8})?$/.test(name);
-}
-
-// Whether an agent program runs this model at Fast: Claude Code on the
-// Opus models above, Codex where its model list says so.
+// Whether an agent program runs this model at Fast: Claude Code and Codex
+// each say per model in the list the server probed from them (Claude Code's
+// supportsFastMode, Codex's service tiers), as the server's
+// agentSpeedEligibility reads it.
 export function harnessFastModel(id: string, model: string, models: ReadonlyArray<{ id: string; fast?: boolean }>): boolean {
-  if (id === "claude") return claudeFastModel(model);
-  if (id === "codex") return Boolean(model) && models.some((entry) => entry.id === model && entry.fast === true);
-  return false;
+  if (id !== "claude" && id !== "codex") return false;
+  return Boolean(model.trim()) && models.some((entry) => entry.id === model && entry.fast === true);
 }
 
 // Said before Fast is chosen, as the admin panel says it.

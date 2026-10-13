@@ -1752,6 +1752,22 @@ html[data-theme="light"] .tt-page > .topbar.tt-header .wordmark { color: var(--t
 }
 .device-settings.game-root > .spinner { margin: 0.5rem auto; }
 
+/* A line between the table's panels (server table-layout.css), stepped by
+   the D-pad while the table is arranged (gamepad.ts, ownArrowKey). Its own
+   light keys on :focus-visible, which focus from script stops matching
+   after a tap, so the controller's class lights it too. */
+.pad-active .game-root .tlay-split:focus::after {
+  opacity: 1;
+  box-shadow: 0 0 0 3px rgba(244, 224, 166, 0.35), 0 0 14px rgba(212, 171, 58, 0.6);
+}
+.pad-active .game-root .tlay-grip:focus,
+.pad-active .game-root .tlay-act:focus,
+.pad-active .game-root .tlay-chip:focus,
+.pad-active .game-root .tlay-corner:focus {
+  outline: 2px solid rgba(244, 224, 166, 0.85);
+  outline-offset: -2px;
+}
+
 /* ---------- the Steam Deck layout ---------- */
 
 /* html.deck (src/shared/deck.ts): a 1280x800 panel seven inches across,

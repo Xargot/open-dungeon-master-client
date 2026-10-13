@@ -12,11 +12,14 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
@@ -163,18 +166,79 @@ public final class WorldRuntime {
         JSONObject current = WorldEnvironment.readInfo(serverDir());
         String builtAt = fresh.optString("builtAt", "");
         if (current != null && builtAt.equals(current.optString("builtAt", ""))) return;
-        store.upgrade(target -> {
-            // The art first, the zip last: the zip carries the marker that
-            // says the tree is complete, and it must not be written before
-            // everything else is.
-            int art = WorldEnvironment.copyLocalAssets(
-                    (path) -> app.getAssets().open(WWW_ASSETS + path), target);
-            try (InputStream in = new BufferedInputStream(app.getAssets().open(PAYLOAD_ASSET))) {
-                WorldEnvironment.unpackZip(in, target);
-            }
-            Log.i(TAG, "Restored " + art + " art files from the app's own copy");
-        });
+        store.upgrade(this::unpackInto);
         Log.i(TAG, "Unpacked server payload " + builtAt);
+    }
+
+    /**
+     * Writes the bundled payload into a directory: the art first, the zip
+     * last, since the zip carries the marker that says the tree is complete
+     * and it must not be written before everything else is.
+     */
+    private void unpackInto(File target) throws IOException {
+        int art = WorldEnvironment.copyLocalAssets(
+                (path) -> app.getAssets().open(WWW_ASSETS + path), target);
+        try (InputStream in = new BufferedInputStream(app.getAssets().open(PAYLOAD_ASSET))) {
+            WorldEnvironment.unpackZip(in, target);
+        }
+        Log.i(TAG, "Restored " + art + " art files from the app's own copy");
+    }
+
+    /**
+     * Unpacks the bundled server again whatever the build stamps say,
+     * keeping the player's folders (PayloadStore.PRESERVED), and starts the
+     * world again when it was awake or had failed; a world asleep stays
+     * asleep. For a tree damaged after the fact, which the stamp cannot
+     * tell: the desktop shell's LocalServer.repair(). Holds the start
+     * monitor so no start launches from a tree being replaced; stop() takes
+     * no monitor, so it cannot deadlock from here. Returns whether the world
+     * was started again.
+     */
+    public synchronized boolean repair() throws IOException {
+        String before = state;
+        boolean again = "running".equals(before) || "error".equals(before);
+        stop();
+        store.upgrade(this::unpackInto);
+        Log.i(TAG, "Rebuilt the server payload");
+        if (again) start();
+        return again;
+    }
+
+    private static JSONObject payloadFacts(JSONObject info) throws JSONException {
+        return new JSONObject()
+                .put("serverVersion", info.optString("serverVersion", ""))
+                .put("builtAt", info.optString("builtAt", ""));
+    }
+
+    /**
+     * What Troubleshooting's summary says of this world (the bridge lays it
+     * out with src/shared/diagnostics.ts): the payload this build ships and
+     * the one unpacked, what of the world's data is on disk, and the ids of
+     * the installed world packs.
+     */
+    public JSONObject diagnostics() {
+        JSONObject json = new JSONObject();
+        try {
+            JSONObject info = bundledInfo();
+            JSONObject unpacked = WorldEnvironment.readInfo(serverDir());
+            json.put("payload", info != null ? payloadFacts(info) : JSONObject.NULL);
+            json.put("runTree", unpacked != null ? payloadFacts(unpacked) : JSONObject.NULL);
+            json.put("dbPresent", dbFile().exists());
+            json.put("keyPresent", new File(dataDir(), "db-key").exists());
+            List<String> ids = new ArrayList<>();
+            File[] files = new File(serverDir(), "data/worlds").listFiles();
+            if (files != null) {
+                for (File file : files) {
+                    String name = file.getName();
+                    if (name.endsWith(".json") && !name.equals("index.json")) ids.add(name.substring(0, name.length() - 5));
+                }
+            }
+            Collections.sort(ids);
+            json.put("packs", new JSONArray(ids));
+        } catch (JSONException ignored) {
+            // JSONObject.put only throws for NaN doubles.
+        }
+        return json;
     }
 
     // ---------- process ----------

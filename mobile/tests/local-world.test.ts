@@ -348,3 +348,21 @@ test("a phone nobody has played on yet makes its owner first, so it can take a w
   assert.equal(picked.ok, true);
   assert.ok(h.calls.includes("register:player:minted-secret"));
 });
+
+test("a repair unpacks the server files again and says whether the world came back", async () => {
+  const h = harness({ world: { state: "running", origin: "http://127.0.0.1:3210" } });
+  h.deps.plugin.repair = async () => ({ ...h.world, started: true });
+  const announced: string[] = [];
+  h.deps.emit = (event) => {
+    if (event.kind === "local-status") announced.push(event.status.state);
+  };
+  assert.deepEqual(await createLocalWorld(h.deps).repair(), { ok: true, found: null, started: true });
+  assert.deepEqual(announced, ["running"], "the status is announced afterwards");
+});
+
+test("an older native side cannot repair, and says so", async () => {
+  const h = harness();
+  const result = await createLocalWorld(h.deps).repair();
+  assert.equal(result.ok, false);
+  assert.equal(await createLocalWorld(h.deps).diagnostics(), null);
+});

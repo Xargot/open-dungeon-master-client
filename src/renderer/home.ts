@@ -33,14 +33,7 @@ import type { IconName } from "./dom.js";
 import { renderLocalAi } from "./local-ai.js";
 import { playLocal, shareRow } from "./local.js";
 import { connectServer, openTyped, renderAdd, scanInvite, signInTo } from "./servers.js";
-import {
-  DEVICE,
-  hideOffline,
-  isAndroid,
-  refreshFeed,
-  setHideOffline,
-  state,
-} from "./state.js";
+import { DEVICE, hideOffline, isAndroid, refresh, refreshFeed, setHideOffline, state } from "./state.js";
 
 const EMPTY_FEED: HomeFeed = { hosts: [], refreshedAt: "" };
 
@@ -357,6 +350,19 @@ function continueBlock(pick: ContinuePick): HTMLElement {
   return block;
 }
 
+// The world would not wake: unpack its server files again, keeping
+// everything the player made, and try once more (Settings, Troubleshooting,
+// says more and checks first).
+async function repairLocal(btn: HTMLButtonElement): Promise<void> {
+  const repair = window.odm.localRepair;
+  if (!repair) return;
+  btn.disabled = true;
+  const result = await repair();
+  await refresh();
+  if (!result.ok) state.local = { ...state.local, state: "error", error: result.error };
+  renderHome();
+}
+
 // The device world before it has a campaign to continue: first run,
 // starting, a crash, or simply ready.
 function localBlock(): HTMLElement {
@@ -369,6 +375,7 @@ function localBlock(): HTMLElement {
     block.append(reveal(eyebrow("The road is dark"), 140), reveal(goldTitle(DEVICE, true), 220));
     block.append(reveal(el("p", "tt-lede", local.error || "The offline world could not start."), 420));
     actions.append(enterButton("Try again", (btn) => void playLocal(btn), "refresh"));
+    if (window.odm.localRepair) actions.append(ghostButton("Repair", (btn) => void repairLocal(btn), "refresh"));
   } else if (local.firstRun) {
     block.append(reveal(eyebrow("Your first tale"), 140), reveal(goldTitle("Begin your world", true), 220));
     block.append(

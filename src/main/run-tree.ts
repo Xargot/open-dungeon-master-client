@@ -13,11 +13,22 @@ import { MARKER, PayloadStore } from "./payload-store";
 //  - The hashed-id aliases Turbopack requires external packages under
 //    (mediasoup-f2b066850faeed90 and the like) travel as a list in
 //    ALIASES_FILE rather than as links, and become junction-style symlinks
-//    here, which need no privilege on Windows either.
+//    (linkModuleAliases), which need no privilege on Windows either.
 //
 // And the art the shell already carries beside its game bundle
 // (dist/renderer/game, listed in its manifest) is left out of the payload
 // and copied back into the server's public tree, so it ships once.
+//
+// Where the aliases are made matters. On Windows a junction holds the
+// absolute path of its target, worked out when the link is made, so a link
+// made while the tree was still being unpacked at local-server.new named a
+// folder that stopped existing the moment payload-store.ts renamed the tree
+// into place: every external the server loads lazily then failed with
+// ERR_MODULE_NOT_FOUND ("Could not load the campaign", server issue #280,
+// 0.17.3 to 0.17.5). So materializeRunTree does not link; the device world
+// (local-server.ts) links in the tree's final place, before every start,
+// and linkModuleAliases replaces an alias that no longer reaches its
+// package.
 
 export const MODULES_DIR = "modules";
 export const ALIASES_FILE = "odm-module-aliases.json";
@@ -25,17 +36,18 @@ export const ALIASES_FILE = "odm-module-aliases.json";
 export type ModuleAliases = Record<string, string>;
 
 // Copies `payloadDir` into `runDir` and restores it into a runnable server
-// tree. `rendererDir` is where the shell's own bundle lives (dist/renderer,
-// inside app.asar when packaged); when it has no manifest the payload is
-// taken as complete. Asynchronous, so the copy (the server, its modules and
-// the art) never holds Electron's main process; and the payload's marker
-// (odm-payload.json) is written last, so a tree is only ever taken for a
-// finished one once everything else is in it (payload-store.ts).
+// tree, short of the alias links, which the caller makes once the tree is
+// where it will run (see above). `rendererDir` is where the shell's own
+// bundle lives (dist/renderer, inside app.asar when packaged); when it has
+// no manifest the payload is taken as complete. Asynchronous, so the copy
+// (the server, its modules and the art) never holds Electron's main process;
+// and the payload's marker (odm-payload.json) is written last, so a tree is
+// only ever taken for a finished one once everything else is in it
+// (payload-store.ts).
 export async function materializeRunTree(payloadDir: string, runDir: string, rendererDir: string): Promise<void> {
   const marker = path.join(payloadDir, MARKER);
   await fs.promises.cp(payloadDir, runDir, { recursive: true, filter: (source) => source !== marker });
   restoreModuleDirs(runDir);
-  linkModuleAliases(runDir);
   await restoreLocalAssets(runDir, rendererDir);
   if (fs.existsSync(marker)) {
     await PayloadStore.writeMarker(runDir, await fs.promises.readFile(marker));
@@ -59,6 +71,12 @@ export function restoreModuleDirs(root: string): number {
   return found.length;
 }
 
+// Makes every alias in ALIASES_FILE a link to its package under `root`'s
+// node_modules, in place: an alias that already reaches its package is left
+// alone, one that reaches nothing (a junction made in local-server.new, or a
+// package folder gone) or something else is replaced, and a plain folder at
+// an alias name is somebody's own and left alone. Answers how many links it
+// made. Cheap when all is well, so it runs before every start.
 export function linkModuleAliases(root: string): number {
   const file = path.join(root, ALIASES_FILE);
   if (!fs.existsSync(file)) return 0;
@@ -68,12 +86,45 @@ export function linkModuleAliases(root: string): number {
   for (const [alias, real] of Object.entries(aliases)) {
     const target = path.join(modules, real);
     const link = path.join(modules, alias);
-    if (!fs.existsSync(target) || fs.existsSync(link)) continue;
+    if (!fs.existsSync(target)) continue;
+    const state = aliasState(link, target);
+    if (state === "good") continue;
+    if (state === "stale") removeLink(link);
     fs.mkdirSync(path.dirname(link), { recursive: true });
     fs.symlinkSync(path.relative(path.dirname(link), target), link, "junction");
     made += 1;
   }
   return made;
+}
+
+// What stands at an alias path: nothing, a link (or folder) that reaches
+// the package, or a link that reaches nothing or the wrong place. Resolved
+// through the OS (realpath native) so a junction's stored path and a
+// folder's own path compare equal on Windows whatever their case.
+function aliasState(link: string, target: string): "missing" | "good" | "stale" {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(link);
+  } catch {
+    return "missing";
+  }
+  if (!stat.isSymbolicLink()) return "good";
+  try {
+    return fs.realpathSync.native(link) === fs.realpathSync.native(target) ? "good" : "stale";
+  } catch {
+    return "stale";
+  }
+}
+
+// Removes a link without touching what it points at. Windows takes a
+// directory junction off with either call depending on the Node build, so
+// the second is tried when the first refuses.
+function removeLink(link: string): void {
+  try {
+    fs.unlinkSync(link);
+  } catch {
+    fs.rmdirSync(link);
+  }
 }
 
 // Reads files one at a time rather than with a recursive copy: the source

@@ -66,9 +66,12 @@ import { relocateWorld } from "../shared/relocate";
 import {
   applyPortalCookies,
   applySessionCookie,
+  clearCaches,
   clearPartition,
   partitionFor,
 } from "./session-cookies";
+import { RESET_PHRASE, diagnosticSummary, redactHome } from "../shared/diagnostics";
+import { requestReset, type ResetOutcome } from "./reset";
 import type { QuickTunnel } from "./tunnel";
 import {
   parseStoryMemory,
@@ -89,6 +92,12 @@ export interface ShellContext {
   updater: Updater;
   // What src/shared/deck.ts found at start; absent where nobody asked.
   deck?: DeckInfo;
+  // Starts the app again once this process is gone (index.ts); the reset
+  // leaves this way. Absent in a harness, which has nowhere to go.
+  relaunch?: () => void;
+  // The reset this start carried out (src/main/reset.ts), if any, so the
+  // Troubleshooting card can say where the previous data went.
+  reset?: ResetOutcome | null;
 }
 
 export interface ShellIpc {
@@ -1227,6 +1236,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     installKind: updater.kind,
     update: updater.lastFound(),
     deck,
+    reset: ctx.reset ? { aside: redactHome(ctx.reset.aside, os.homedir()), left: ctx.reset.left } : null,
   }));
   shellIpc.handle("deck:set-choice", (_event, raw: unknown) => {
     if (!deck) return undefined;
@@ -1270,6 +1280,92 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     } catch (err) {
       return fail(err);
     }
+  });
+
+  // Troubleshooting (Settings): the server files the device world runs
+  // from, checked against the ones this build shipped (every byte) and
+  // unpacked again with everything the player made kept; the files cached
+  // from servers, cleared with sign-ins and storage left alone; a summary
+  // for a bug report (src/shared/diagnostics.ts); the folder the logs are
+  // in. None of it touches the world's database, its key or its packs.
+  shellIpc.handle("local:verify", async () => {
+    try {
+      return { ok: true, report: await local.verify(true) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  shellIpc.handle("local:repair", async () => {
+    try {
+      const result = await local.repair();
+      win.sendEvent({ kind: "local-status", status: localStatus() });
+      return { ok: true, ...result };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  shellIpc.handle("caches:clear", async () => {
+    try {
+      const partitions = [partitionFor(LOCAL_SERVER_ID), ...store.list().map((entry) => partitionFor(entry.id))];
+      return { ok: true, sessions: await clearCaches(partitions) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  shellIpc.handle("diag:summary", async () => {
+    const world = local.diagnostics();
+    const status = localStatus();
+    const home = os.homedir();
+    const text = diagnosticSummary({
+      app: {
+        version: app.getVersion(),
+        installKind: updater.kind,
+        platform: process.platform,
+        arch: process.arch,
+        os: `${os.type()} ${os.release()}`,
+        runtime: `Electron ${process.versions.electron}`,
+      },
+      payload: world.payload,
+      runTree: world.runTree,
+      world: {
+        state: status.state,
+        error: status.error,
+        firstRun: status.firstRun,
+        dbPresent: world.dbPresent,
+        keyPresent: world.keyPresent,
+        packs: world.packs,
+      },
+      servers: store.list().length,
+      verify: await local.verify(false).catch(() => null),
+      paths: { userData: redactHome(app.getPath("userData"), home), log: redactHome(local.logFile, home) },
+    });
+    return { text };
+  });
+  // Starting over (src/main/reset.ts). The typed word guards it; the share,
+  // the engines and the world are stopped first so nothing holds the folder,
+  // then the marker is written and the app restarts to carry it out.
+  shellIpc.handle("app:reset", async (_event, phrase: unknown) => {
+    if (str(phrase, 16).trim() !== RESET_PHRASE) return fail(new Error(`Type ${RESET_PHRASE} to confirm.`));
+    try {
+      await shutdownShare();
+      await localAi.stop().catch(() => undefined);
+      await local.stop();
+      requestReset(app.getPath("userData"));
+      if (ctx.relaunch) ctx.relaunch();
+      else {
+        app.relaunch();
+        app.quit();
+      }
+      return { ok: true };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  shellIpc.handle("diag:show-logs", async () => {
+    // The world's log, highlighted; the data folder itself before the
+    // world has ever written one.
+    if (fs.existsSync(local.logFile)) shell.showItemInFolder(local.logFile);
+    else await shell.openPath(app.getPath("userData"));
   });
 
   shellIpc.handle("local-ai:scan", async () => {

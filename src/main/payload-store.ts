@@ -25,6 +25,21 @@ import path from "node:path";
 
 export const MARKER = "odm-payload.json";
 
+// Windows holds a file or folder for a moment after the program using it
+// has gone, and Defender and the search indexer open the files an unpack
+// just wrote, so a rename or delete there fails with EPERM or EBUSY and
+// succeeds a moment later; Linux calls a folder nobody may write into
+// EACCES. Those are retried, for about five seconds. Anything else (another
+// disk, a missing source) is not. Tests shorten the wait.
+const LOCK_CODES = new Set(["EPERM", "EBUSY", "EACCES", "ENOTEMPTY"]);
+export const lockPatience = { attempts: 20, delayMs: 250 };
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function code(error: unknown): string {
+  return (error as NodeJS.ErrnoException)?.code ?? "";
+}
+
 export type Unpack = (dir: string) => Promise<void>;
 
 export class PayloadStore {
@@ -78,7 +93,7 @@ export class PayloadStore {
       // still inside it was never moved out, so it wins over the new tree.
       if (isDirectory(this.server)) await this.movePreserved(this.old, this.server, true);
       else await rename(this.old, this.server);
-      await deleteTree(this.old);
+      await discardOldTree(this.old);
     }
     if (isDirectory(this.fresh)) {
       if (PayloadStore.hasMarker(this.fresh)) {
@@ -123,7 +138,7 @@ export class PayloadStore {
   private async swap(): Promise<void> {
     await rename(this.server, this.old);
     await rename(this.fresh, this.server);
-    await deleteTree(this.old);
+    await discardOldTree(this.old);
   }
 
   private async movePreserved(from: string, to: string, overwrite: boolean): Promise<void> {
@@ -152,24 +167,47 @@ function isDirectory(target: string): boolean {
 }
 
 async function rename(from: string, to: string): Promise<void> {
-  await fs.promises.rename(from, to);
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await fs.promises.rename(from, to);
+      return;
+    } catch (error) {
+      if (!LOCK_CODES.has(code(error)) || attempt >= lockPatience.attempts) throw error;
+      await delay(lockPatience.delayMs);
+    }
+  }
 }
 
 export async function deleteTree(target: string): Promise<void> {
-  await fs.promises.rm(target, { recursive: true, force: true });
+  await fs.promises.rm(target, { recursive: true, force: true, maxRetries: lockPatience.attempts, retryDelay: lockPatience.delayMs });
+}
+
+// The tree a swap has replaced holds nothing the player needs any more, so
+// a lock that outlasts the retries is noted and left for the next start's
+// recover() rather than failing this start with the new tree in place.
+async function discardOldTree(target: string): Promise<void> {
+  try {
+    await deleteTree(target);
+  } catch (error) {
+    console.warn(`[payload-store] ${target} could not be removed yet; the next start will try again`, error);
+  }
 }
 
 // Moves a file or directory by rename when it can, copying only when the
-// rename fails (another disk), and merges into whatever already exists at
-// the target. With overwrite false, files already at the target are left
-// alone.
+// rename fails because the target is on another disk (EXDEV), and merges
+// into whatever already exists at the target. With overwrite false, files
+// already at the target are left alone. A locked source is retried by
+// rename() and then fails outright: copying around a lock and deleting
+// what could be deleted would leave the player's files split across two
+// trees.
 export async function moveTree(from: string, to: string, overwrite: boolean): Promise<void> {
   if (!exists(to)) {
     await fs.promises.mkdir(path.dirname(to), { recursive: true });
     try {
-      await fs.promises.rename(from, to);
+      await rename(from, to);
       return;
-    } catch {
+    } catch (error) {
+      if (code(error) !== "EXDEV") throw error;
       await fs.promises.cp(from, to, { recursive: true });
       await deleteTree(from);
       return;
@@ -185,8 +223,9 @@ export async function moveTree(from: string, to: string, overwrite: boolean): Pr
   if (!overwrite) return;
   await deleteTree(to);
   try {
-    await fs.promises.rename(from, to);
-  } catch {
+    await rename(from, to);
+  } catch (error) {
+    if (code(error) !== "EXDEV") throw error;
     await fs.promises.cp(from, to, { recursive: true });
     await deleteTree(from);
   }

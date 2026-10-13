@@ -106,3 +106,18 @@ export function pickFirst(candidates: readonly Box[], viewport: { width: number;
   });
   return best;
 }
+
+// A control that takes some D-pad presses as a change of its own value
+// rather than a move away: a drawn slider (the kit's level controls) takes
+// left and right, and a window splitter (the table's arrangement, server
+// TableLayoutParts.tsx) takes the two directions it moves in, sideways for
+// a line between columns, up and down for one between stacked panes. The
+// arrow key it hears, or null when the press should move the highlight.
+// A separator's orientation defaults to horizontal, as in ARIA.
+export function ownArrowKey(role: string | null, orientation: string | null, dir: Direction): string | null {
+  const key = dir === "left" ? "ArrowLeft" : dir === "right" ? "ArrowRight" : dir === "up" ? "ArrowUp" : "ArrowDown";
+  const sideways = dir === "left" || dir === "right";
+  if (role === "slider") return sideways ? key : null;
+  if (role === "separator") return (orientation === "vertical") === sideways ? key : null;
+  return null;
+}

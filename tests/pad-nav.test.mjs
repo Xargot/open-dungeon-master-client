@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PAD_INDEX, PadReader } from "../dist/shared/pad-input.js";
-import { navScore, pickFirst, pickNext } from "../dist/shared/spatial-nav.js";
+import { navScore, ownArrowKey, pickFirst, pickNext } from "../dist/shared/spatial-nav.js";
 
 const box = (left, top, width, height) => ({ left, top, right: left + width, bottom: top + height });
 
@@ -137,4 +137,20 @@ test("the right stick and the triggers scroll, gently at first, and rest in the 
   assert.ok(crept > 0 && crept < 60, `light push over half a second: ${crept}`);
   const up = reader.read([scrollPad(0, 1, 0)], 600);
   assert.ok(up[0].dy < 0, "the left trigger scrolls up");
+});
+
+test("a slider keeps left and right; a line between panels keeps the two directions it moves in", () => {
+  assert.equal(ownArrowKey("slider", null, "right"), "ArrowRight");
+  assert.equal(ownArrowKey("slider", null, "up"), null);
+  // Between two columns (server TableLayoutParts.tsx): sideways resizes,
+  // up and down leave it for the next control.
+  assert.equal(ownArrowKey("separator", "vertical", "left"), "ArrowLeft");
+  assert.equal(ownArrowKey("separator", "vertical", "right"), "ArrowRight");
+  assert.equal(ownArrowKey("separator", "vertical", "down"), null);
+  // Between stacked panes, and ARIA's default when none is said.
+  assert.equal(ownArrowKey("separator", "horizontal", "up"), "ArrowUp");
+  assert.equal(ownArrowKey("separator", null, "down"), "ArrowDown");
+  assert.equal(ownArrowKey("separator", "horizontal", "left"), null);
+  assert.equal(ownArrowKey("button", null, "left"), null);
+  assert.equal(ownArrowKey(null, null, "right"), null);
 });

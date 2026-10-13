@@ -61,6 +61,33 @@ export interface LocalStatus {
   lanOrigin: string;
 }
 
+// The server files the app unpacked for its world, checked against the ones
+// it shipped with (src/main/payload-manifest.ts). Desktop only: the phone's
+// payload carries no manifest yet.
+export interface VerifyReport {
+  // False when the payload has not been unpacked yet (a world never
+  // entered): nothing to check, the next start unpacks it.
+  unpacked: boolean;
+  // How many files the shipped payload lists.
+  listed: number;
+  // Payload-relative paths of the files missing from the tree, and of those
+  // whose size (or, when hashed, whose bytes) differ from the shipped file.
+  missing: string[];
+  changed: string[];
+  hashed: boolean;
+}
+
+// What a repair (the server files unpacked again, keeping everything the
+// player made) found and did.
+export interface RepairResult {
+  // The check before the rebuild; null when this build carries no manifest
+  // to check against.
+  found: VerifyReport | null;
+  // Whether the world was started again afterwards: it is when it was awake
+  // or had failed before, and left asleep otherwise.
+  started: boolean;
+}
+
 // The offline-play setup wizard's AI step. "human" changes nothing on the
 // server; campaigns simply run with a human Dungeon Master.
 export interface AiSetup {
@@ -226,6 +253,9 @@ export interface AppInfo {
   update?: UpdateStatus | null;
   // The Steam Deck layout (src/shared/deck.ts). Desktop only.
   deck?: DeckInfo;
+  // The reset this start carried out (src/main/reset.ts): where the
+  // previous data went, and what could not be moved. Desktop only.
+  reset?: { aside: string; left: string[] } | null;
 }
 
 export interface UpdateStatus {
@@ -510,6 +540,23 @@ export interface OdmBridge {
   localImportCommit?(): Promise<Result<{ owner: string }>>;
   localImportCancel?(): Promise<void>;
   appInfo(): Promise<AppInfo>;
+  // Troubleshooting (Settings): the server files the app unpacked, checked
+  // against the ones it shipped with; unpacked again with everything the
+  // player made kept (and the world started again when it was awake or had
+  // failed); the files cached from servers cleared, sign-ins and storage
+  // left alone; a summary for a bug report, with nothing private in it; and
+  // the folder the logs are in. Each is absent where a shell has no such
+  // thing (the phone checks nothing and keeps no log folder to open), so
+  // the row is withheld rather than dead.
+  localVerify?(): Promise<Result<{ report: VerifyReport | null }>>;
+  localRepair?(): Promise<Result<RepairResult>>;
+  clearCaches?(): Promise<Result<{ sessions: number }>>;
+  diagnosticSummary?(): Promise<{ text: string }>;
+  showLogs?(): Promise<void>;
+  // Starting over: everything the app keeps set aside (never deleted) and
+  // the app restarted empty, once the typed word matches RESET_PHRASE.
+  // Desktop only; the phone's system settings clear an app's storage.
+  resetApp?(phrase: string): Promise<Result>;
   // The Steam Deck layout switch in Settings; answers with the info as it
   // stands after the change. Desktop only.
   setDeckChoice?(choice: DeckChoice): Promise<DeckInfo>;

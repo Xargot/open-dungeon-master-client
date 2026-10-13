@@ -5,10 +5,12 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { lanOrigin } from "../shared/lan";
-import type { LocalStatus } from "../shared/types";
-import { materializeRunTree } from "./run-tree";
+import type { LocalStatus, RepairResult, VerifyReport } from "../shared/types";
+import { linkModuleAliases, materializeRunTree } from "./run-tree";
 import { openLog } from "./log-files";
+import { verifyRunTree } from "./payload-manifest";
 import { PayloadStore } from "./payload-store";
+import { reapStaleServer } from "./stale-server";
 
 // Runs the bundled Open Dungeon Master server (a Next.js standalone build
 // produced by scripts/bundle-server.mjs) as a child process on localhost,
@@ -24,12 +26,20 @@ const DEFAULT_PORT = 3210;
 
 // Player-made data living inside the server tree that must survive a payload
 // upgrade. The database itself lives outside the tree (SQLITE_DB_PATH).
-const PRESERVED = [
+// data/ is the server's own run-time folder (its Docker volume): the world
+// packs an admin installs land in data/worlds and the sound library's lock
+// beside them, and no payload ships anything under it (the prune drops it),
+// so the whole folder moves across. Until it was listed here every upgrade
+// left the world with only the bundled Saltmarch.
+// PayloadStore.java carries the same list for Android; a test holds the two
+// together.
+export const PRESERVED = [
   "public/uploads",
   "public/generated",
   "public/generated-audio",
   "public/ambience",
   "models",
+  "data",
 ];
 
 function readPayloadInfo(dir: string): PayloadInfo | null {
@@ -99,8 +109,16 @@ export class LocalServer {
   private get dataDir(): string {
     return path.join(this.userDataDir, "data");
   }
+  // The running child's pid, so a start after a crash can end the server
+  // the last one left behind before it touches the tree (stale-server.ts).
+  private get pidFile(): string {
+    return path.join(this.userDataDir, "local-server.pid");
+  }
   private get dbPath(): string {
     return path.join(this.dataDir, "odm.sqlite");
+  }
+  get logFile(): string {
+    return path.join(this.userDataDir, "local-server.log");
   }
   // Where the world's server stages a world archive it packs or checks
   // (its src/lib/ops/world-archive.ts): beside the database.
@@ -162,14 +180,44 @@ export class LocalServer {
   // Brings the run tree up to this build's payload (payload-store.ts): any
   // upgrade an earlier run left half done is finished or unwound first,
   // every time, so a matching build stamp never hides an interrupted one.
-  private async syncRunTree(): Promise<void> {
+  // Answers whether it unpacked the payload this time.
+  private async syncRunTree(): Promise<boolean> {
     const fresh = readPayloadInfo(this.payloadDir);
     if (!fresh) throw new Error("This build has no bundled server payload.");
     const store = new PayloadStore(this.runDir, PRESERVED);
     await store.recover();
     const current = readPayloadInfo(this.runDir);
-    if (current && current.builtAt === fresh.builtAt) return;
-    await store.upgrade((dir) => materializeRunTree(this.payloadDir, dir, this.rendererDir));
+    if (current && current.builtAt === fresh.builtAt) {
+      this.linkAliases();
+      return false;
+    }
+    await this.rebuildRunTree();
+    return true;
+  }
+
+  // Unpacks the bundled payload over the run tree whatever the build stamps
+  // say, keeping PRESERVED (payload-store.ts finishes or unwinds anything an
+  // earlier run left first), and links the aliases once the tree is in place.
+  private async rebuildRunTree(): Promise<void> {
+    await new PayloadStore(this.runDir, PRESERVED).upgrade((dir) => materializeRunTree(this.payloadDir, dir, this.rendererDir));
+    this.linkAliases();
+  }
+
+  // The hashed-id aliases the server's externals load through, made in the
+  // run tree's final place and checked before every start: a junction made
+  // while the tree was still local-server.new (0.17.3 to 0.17.5 on Windows)
+  // points nowhere once the tree is renamed, and is replaced here (run-tree.ts
+  // says more). A tree already in place that needed none is the common case.
+  private linkAliases(): void {
+    const made = linkModuleAliases(this.runDir);
+    if (made) console.log(`[local-server] linked ${made} module alias${made === 1 ? "" : "es"} in ${this.runDir}`);
+  }
+
+  // The run tree checked against the bundled payload's manifest
+  // (payload-manifest.ts): sizes, or the bytes too with `hash`. Null when
+  // this build carries no manifest (a development run).
+  verify(hash: boolean): Promise<VerifyReport | null> {
+    return verifyRunTree(this.payloadDir, this.runDir, { hash });
   }
 
   private get bindHost(): string {
@@ -275,56 +323,82 @@ export class LocalServer {
   private async doStart(): Promise<void> {
     this.setState("starting");
     try {
-      await this.syncRunTree();
+      await reapStaleServer(this.pidFile, path.join(this.runDir, "server.js"));
+      const unpacked = await this.syncRunTree();
       fs.mkdirSync(this.dataDir, { recursive: true });
-      this.port = await this.pickPort();
-      const log = openLog(path.join(this.userDataDir, "local-server.log"));
-      const extra = this.extraEnv();
-      this.startedEnv = extra;
-      const child = spawn(process.execPath, [path.join(this.runDir, "server.js")], {
-        cwd: this.runDir,
-        env: {
-          ...process.env,
-          ELECTRON_RUN_AS_NODE: "1",
-          NODE_ENV: "production",
-          PORT: String(this.port),
-          HOSTNAME: this.bindHost,
-          SQLITE_DB_PATH: this.dbPath,
-          DB_ENCRYPTION_KEY: this.dbEncryptionKey(),
-          // The spells, items, monsters and feats catalogue, staged by
-          // bundle-server.mjs beside the server the way the Docker image
-          // lays it out. Without it every picker in the character builder
-          // and the workshop searches an empty pack.
-          CONTENT_DB_PATH: path.join(this.runDir, "content", "open5e.sqlite"),
-          // Tells the server it is the shell's own world, so its admin panel
-          // hides what the shell manages (address, sign-ups, voice, Discord).
-          ODM_DEVICE_WORLD: "1",
-          ODM_SETUP_CODE: this.setupCode,
-          ODM_PORTAL_SECRET: this.portalSecret(),
-          // The server refuses uploads once the disk would drop below 1 GB
-          // free, sized for a server's volume. This disk is the owner's own,
-          // so the floor here is only what keeps the database writable; a
-          // value already in the environment still wins.
-          UPLOAD_MIN_FREE_BYTES: process.env.UPLOAD_MIN_FREE_BYTES || String(256 * 1024 * 1024),
-          ...extra,
-        },
-        stdio: ["ignore", log, log],
-      });
-      fs.closeSync(log);
-      this.child = child;
-      child.once("exit", () => {
-        if (this.child === child) {
-          this.child = null;
-          this.setState("error", "The local server stopped unexpectedly (see local-server.log).");
-        }
-      });
-      await this.waitHealthy(child);
+      try {
+        await this.launch();
+      } catch (first) {
+        // A tree this start did not just unpack may have lost a file since
+        // (an antivirus quarantine, a torn copy, a hand in the folder), and
+        // the build stamp cannot tell. When the payload's manifest finds it
+        // so, rebuild the tree once and try again; any other failure is
+        // reported as it is, and Settings offers the rebuild by hand.
+        if (unpacked) throw first;
+        const found = await this.verify(false).catch((): VerifyReport | null => null);
+        if (!found?.unpacked || found.missing.length + found.changed.length === 0) throw first;
+        console.warn(
+          `[local-server] ${found.missing.length} server files are missing and ${found.changed.length} changed; rebuilding them and starting again`,
+          first,
+        );
+        await this.endChild();
+        this.setState("starting");
+        await this.rebuildRunTree();
+        await this.launch();
+      }
       this.setState("running");
     } catch (err) {
       await this.stop().catch(() => undefined);
       this.setState("error", err instanceof Error ? err.message : String(err));
       throw err;
     }
+  }
+
+  // Starts the server from the run tree and waits until it answers.
+  private async launch(): Promise<void> {
+    this.port = await this.pickPort();
+    const log = openLog(this.logFile);
+    const extra = this.extraEnv();
+    this.startedEnv = extra;
+    const child = spawn(process.execPath, [path.join(this.runDir, "server.js")], {
+      cwd: this.runDir,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
+        NODE_ENV: "production",
+        PORT: String(this.port),
+        HOSTNAME: this.bindHost,
+        SQLITE_DB_PATH: this.dbPath,
+        DB_ENCRYPTION_KEY: this.dbEncryptionKey(),
+        // The spells, items, monsters and feats catalogue, staged by
+        // bundle-server.mjs beside the server the way the Docker image
+        // lays it out. Without it every picker in the character builder
+        // and the workshop searches an empty pack.
+        CONTENT_DB_PATH: path.join(this.runDir, "content", "open5e.sqlite"),
+        // Tells the server it is the shell's own world, so its admin panel
+        // hides what the shell manages (address, sign-ups, voice, Discord).
+        ODM_DEVICE_WORLD: "1",
+        ODM_SETUP_CODE: this.setupCode,
+        ODM_PORTAL_SECRET: this.portalSecret(),
+        // The server refuses uploads once the disk would drop below 1 GB
+        // free, sized for a server's volume. This disk is the owner's own,
+        // so the floor here is only what keeps the database writable; a
+        // value already in the environment still wins.
+        UPLOAD_MIN_FREE_BYTES: process.env.UPLOAD_MIN_FREE_BYTES || String(256 * 1024 * 1024),
+        ...extra,
+      },
+      stdio: ["ignore", log, log],
+    });
+    fs.closeSync(log);
+    this.child = child;
+    if (child.pid) fs.writeFileSync(this.pidFile, String(child.pid));
+    child.once("exit", () => {
+      if (this.child === child) {
+        this.child = null;
+        this.setState("error", "The local server stopped unexpectedly (see local-server.log).");
+      }
+    });
+    await this.waitHealthy(child);
   }
 
   // Stops and starts again on the same port when it is still free (see
@@ -336,6 +410,13 @@ export class LocalServer {
   }
 
   async stop(): Promise<void> {
+    await this.endChild();
+    this.setState("stopped");
+  }
+
+  // Ends the child, if any, and forgets it; the state is the caller's to
+  // set, so a start trying again after a rebuild never shows as stopped.
+  private async endChild(): Promise<void> {
     const child = this.child;
     this.child = null;
     this.port = 0;
@@ -349,6 +430,66 @@ export class LocalServer {
         });
       });
     }
-    this.setState("stopped");
+    fs.rmSync(this.pidFile, { force: true });
+  }
+
+  // Unpacks the bundled server again over the run tree, whatever the build
+  // stamps say, keeping everything the player made (PRESERVED), and starts
+  // the world again when it was awake or had failed; a world asleep stays
+  // asleep. For a tree damaged after the fact, which the stamp cannot tell.
+  // Takes the start slot (startPromise) while it works, so a start asked for
+  // meanwhile waits for the rebuilt tree instead of launching from one being
+  // replaced.
+  async repair(): Promise<RepairResult> {
+    while (this.startPromise) await this.startPromise.catch(() => undefined);
+    let result: RepairResult | null = null;
+    this.startPromise = this.doRepair()
+      .then((done) => {
+        result = done;
+      })
+      .finally(() => {
+        this.startPromise = null;
+      });
+    await this.startPromise;
+    return result!;
+  }
+
+  private async doRepair(): Promise<RepairResult> {
+    const again = this.state === "running" || this.state === "error";
+    await this.stop();
+    const found = await this.verify(false).catch((): VerifyReport | null => null);
+    await reapStaleServer(this.pidFile, path.join(this.runDir, "server.js"));
+    await this.rebuildRunTree();
+    if (again) await this.doStart();
+    return { found, started: again };
+  }
+
+  // What Troubleshooting's summary says of this world (src/shared/
+  // diagnostics.ts): the payload this build ships and the one unpacked, what
+  // of the world's data is on disk, the ids of the installed world packs.
+  diagnostics(): {
+    payload: PayloadInfo | null;
+    runTree: PayloadInfo | null;
+    dbPresent: boolean;
+    keyPresent: boolean;
+    packs: string[];
+  } {
+    let packs: string[] = [];
+    try {
+      packs = fs
+        .readdirSync(path.join(this.runDir, "data", "worlds"))
+        .filter((file) => file.endsWith(".json") && file !== "index.json")
+        .map((file) => file.slice(0, -".json".length))
+        .sort();
+    } catch {
+      // None installed, or no tree yet.
+    }
+    return {
+      payload: readPayloadInfo(this.payloadDir),
+      runTree: readPayloadInfo(this.runDir),
+      dbPresent: fs.existsSync(this.dbPath),
+      keyPresent: fs.existsSync(path.join(this.dataDir, "db-key")),
+      packs,
+    };
   }
 }

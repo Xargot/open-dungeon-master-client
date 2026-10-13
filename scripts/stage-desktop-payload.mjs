@@ -17,6 +17,9 @@
 //  - Build leftovers inside the rebuilt SQLite module go (object files,
 //    the SQLite sources, prebuilt downloads): only the binding and its
 //    JavaScript run.
+//  - A manifest of every file that stays (size and sha256) is written last
+//    at the top of the payload, so the app can tell a run tree that lost a
+//    file from one that is whole and rebuild it (src/main/payload-manifest.ts).
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -37,7 +40,8 @@ async function runTreeLayout() {
   const built = path.join(repo, "dist", "main", "run-tree.js");
   if (!fs.existsSync(built)) throw new Error("dist/main/run-tree.js is missing: run npm run build first.");
   const { MODULES_DIR, ALIASES_FILE } = await import(pathToFileURL(built).href);
-  return { MODULES_DIR, ALIASES_FILE };
+  const { writePayloadManifest } = await import(pathToFileURL(path.join(repo, "dist", "main", "payload-manifest.js")).href);
+  return { MODULES_DIR, ALIASES_FILE, writePayloadManifest };
 }
 
 function isSymlink(file) {
@@ -182,7 +186,7 @@ export async function stageDesktopPayload({
   }
   const manifest = readLocalAssetManifest(rendererDir);
   if (!manifest) throw new Error(`No renderer bundle at ${rendererDir}; run npm run build first.`);
-  const { MODULES_DIR, ALIASES_FILE } = await runTreeLayout();
+  const { MODULES_DIR, ALIASES_FILE, writePayloadManifest } = await runTreeLayout();
   const aliases = collectModuleAliases(vendorDir);
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.cpSync(vendorDir, outDir, { recursive: true, filter: (src) => !isSymlink(src) });
@@ -195,6 +199,7 @@ export async function stageDesktopPayload({
     aliases: Object.keys(aliases).length,
   };
   fs.writeFileSync(path.join(outDir, ALIASES_FILE), JSON.stringify(aliases, null, 2) + "\n");
+  report.manifest = Object.keys((await writePayloadManifest(outDir)).files).length;
   return report;
 }
 
@@ -208,7 +213,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   console.log(`Binaries for other platforms left out: ${report.foreign.join(", ") || "none"}`);
   console.log(
     `Left out ${report.localAssets} art files the shell carries, ${report.sqlite} SQLite build entries; ` +
-      `${report.modules} module folders renamed, ${report.aliases} aliases recorded`,
+      `${report.modules} module folders renamed, ${report.aliases} aliases recorded, ${report.manifest} files in the manifest`,
   );
   console.log("Desktop payload staged at vendor/desktop");
 }

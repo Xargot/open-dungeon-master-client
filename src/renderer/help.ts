@@ -107,13 +107,13 @@ export function renderHelp(): void {
           "Steam Deck and controllers",
           `On a Steam Deck the app switches to its Deck layout by itself: full screen in Game Mode, a title screen that fits the Deck's screen, and button hints along the foot. Settings has the switch; the launch options --steam-deck and --no-steam-deck decide for one Steam shortcut.`,
           `To play from Game Mode, add the app to Steam in Desktop Mode: in Steam choose Games, then Add a Non-Steam Game to My Library, and pick Open Dungeon Master (the flatpak) or browse to the AppImage. If a shortcut to the AppImage does not start, open its Properties and put --no-sandbox in Launch Options.`,
-          `A controller works on every screen, the Deck's own or any pad: the D-pad moves the highlight, A presses, B backs out, Menu opens the menu and View opens Settings. At the table, X jumps to the message box with Steam's keyboard up, holding L1 talks in voice chat (with the mic on Push to talk), and holding R1 speaks to the Dungeon Master. Settings lists every control.`,
+          `A controller works on every screen, the Deck's own or any pad: the D-pad moves the highlight, A presses, B backs out, Menu opens the menu and View opens Settings. At the table, X jumps to the message box with Steam's keyboard up, holding L1 talks in voice chat (with the mic on Push to talk), and holding R1 speaks to the Dungeon Master. While the table is being arranged (the layout button in its header), a highlighted line between two panels moves with the D-pad to resize them, and B finishes arranging. Settings lists every control.`,
           `The Deck's built-in microphone works like any other: pick it, or a headset, under Audio and dice in Settings, where the level meter shows whether it hears you.`,
         ),
     section(
       "gear",
       "Settings",
-      `Settings gathers what belongs to the app itself: the microphone, playback and dice, updates, sharing your world, Story AI,${isAndroid ? "" : " the language your world's story memory reads (pick Many languages when your table plays in Italian, Spanish or another language),"} the hide-offline switch for the title screen's save slots, and the tour. Your account, avatar and password live on each server, under its own Settings page.`,
+      `Settings gathers what belongs to the app itself: the microphone, playback and dice, updates, sharing your world, Story AI,${isAndroid ? "" : " the language your world's story memory reads (pick Many languages when your table plays in Italian, Spanish or another language),"} the hide-offline switch for the title screen's save slots, the tour, and Troubleshooting: a check and a repair of the app's own server files, cached files cleared, and a summary to copy into a bug report, none of which touches anything you made. Your account, avatar and password live on each server, under its own Settings page.`,
     ),
   );
 }

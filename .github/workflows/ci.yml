@@ -1,7 +1,8 @@
 # Checks every pull request and every push to main: lint, the desktop
-# build and its tests, the mobile tests and type check, and the Android
-# unit tests (PayloadStore recovery, the local asset index). The release
-# workflow runs the same checks before a release goes live.
+# build and its tests, the mobile tests and type check, the main process's
+# file-handling tests on Windows, and the Android unit tests (PayloadStore
+# recovery, the local asset index). The release workflow runs the same
+# checks before a release goes live.
 #
 # The renderer bundles the server's page components, so the server repo is
 # checked out beside the client at its default branch: a client change has
@@ -69,6 +70,33 @@ jobs:
       - name: Test the mobile app
         working-directory: mobile
         run: npm test
+
+  # The payload swap, the run tree, the stale-server reaper and the repair
+  # meet what only Windows has: files held for a moment after their process
+  # is gone, paths compared without case, a process list read through
+  # PowerShell. Their tests run there too, on the main process alone, since
+  # they need nothing of the renderer or the server checkout.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Build the main process
+        run: npx tsc -p tsconfig.main.json
+      - name: Test the payload store, the run tree, the manifest, the device world and the reaper
+        run: >-
+          node --test
+          tests/payload-store.test.mjs
+          tests/payload-manifest.test.mjs
+          tests/run-tree.test.mjs
+          tests/stale-server.test.mjs
+          tests/local-server.test.mjs
+          tests/reset.test.mjs
+          tests/diagnostics.test.mjs
+          tests/prune-server-payload.test.mjs
 
   android:
     runs-on: ubuntu-latest

@@ -28,13 +28,18 @@ final class PayloadStore {
 
     static final String MARKER = "odm-payload.json";
 
-    /** Player-made data inside the server tree that must survive a payload upgrade. */
+    /**
+     * Player-made data inside the server tree that must survive a payload upgrade:
+     * the same list as PRESERVED in the desktop's src/main/local-server.ts, which
+     * says why each folder is here. data/ holds the installed world packs.
+     */
     static final String[] PRESERVED = {
         "public/uploads",
         "public/generated",
         "public/generated-audio",
         "public/ambience",
         "models",
+        "data",
     };
 
     /** Writes a whole payload into a directory, with the marker file last. */

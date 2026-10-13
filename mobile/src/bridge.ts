@@ -61,6 +61,7 @@ import {
   portalEligible,
 } from "../../src/shared/portal-logic";
 import { landingPath, safeInnerPath } from "../../src/shared/open-path";
+import { diagnosticSummary } from "../../src/shared/diagnostics";
 import type {
   AccountDeletionResult,
   ConnectResult,
@@ -1743,6 +1744,40 @@ const bridge: OdmBridge = {
   localImportPick: () => localWorld.importPick(),
   localImportCommit: () => localWorld.importCommit(),
   localImportCancel: () => localWorld.importCancel(),
+  // Troubleshooting (Settings), the phone's half: the server files unpacked
+  // again with everything the player made kept (WorldRuntime.repair), and
+  // the summary for a bug report. The phone's payload carries no manifest,
+  // so there is no check, and nothing of the WebView's cache is offered.
+  localRepair: () => localWorld.repair(),
+  async diagnosticSummary() {
+    const [status, facts, info, servers] = await Promise.all([
+      localWorld.status(),
+      localWorld.diagnostics(),
+      App.getInfo().catch(() => null),
+      loadServers(),
+    ]);
+    // The WebView's user agent names the Android version and the device,
+    // the way it does to every site.
+    const device = /\(([^)]*)\)/.exec(navigator.userAgent)?.[1] ?? "";
+    return {
+      text: diagnosticSummary({
+        app: { version: info?.version ?? "", installKind: "android", platform: "android", arch: "", os: device, runtime: "WebView" },
+        payload: facts?.payload ?? null,
+        runTree: facts?.runTree ?? null,
+        world: {
+          state: status.state,
+          error: status.error,
+          firstRun: status.firstRun,
+          dbPresent: facts?.dbPresent ?? false,
+          keyPresent: facts?.keyPresent ?? false,
+          packs: facts?.packs ?? [],
+        },
+        servers: servers.length,
+        verify: null,
+        paths: { userData: "the app's private storage", log: "local-server.log in the app's private storage" },
+      }),
+    };
+  },
   async shareStart() {
     const status = await shareTunnel.start();
     if (status.state !== "running") return fail(new Error(status.error || "Sharing failed."));

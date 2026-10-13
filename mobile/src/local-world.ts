@@ -3,6 +3,7 @@ import type {
   AiSetup,
   ConnectResult,
   LocalStatus,
+  RepairResult,
   Result,
   SavedAi,
   ShellEvent,
@@ -48,11 +49,28 @@ export interface WorldEvent {
   message?: string;
 }
 
+// The facts behind Troubleshooting's summary (WorldRuntime.diagnostics):
+// the payload this build ships and the one unpacked, what of the world's
+// data is on disk, the ids of the installed world packs.
+export interface WorldDiagnostics {
+  payload: { serverVersion: string; builtAt: string } | null;
+  runTree: { serverVersion: string; builtAt: string } | null;
+  dbPresent: boolean;
+  keyPresent: boolean;
+  packs: string[];
+}
+
 export interface LocalWorldPlugin {
   status(): Promise<WorldStatus>;
   start(): Promise<WorldStatus>;
   stop(): Promise<WorldStatus>;
   log(): Promise<{ text: string }>;
+  // Troubleshooting (WorldRuntime.repair, WorldRuntime.diagnostics): the
+  // server files unpacked again with the player's folders kept, and the
+  // world started again when it was awake or had failed; and the facts for
+  // the summary. Absent on an older native side.
+  repair?(): Promise<WorldStatus & { started: boolean }>;
+  diagnostics?(): Promise<WorldDiagnostics>;
   // Moving the world (LocalWorldPlugin.java): copy a picked archive beside
   // the world's database ({ name: "" } when the picker is closed), or copy a
   // packed one to where the person chooses.
@@ -468,6 +486,29 @@ export function createLocalWorld(deps: LocalWorldDeps) {
     }
   }
 
+  // Unpacks the server files again, keeping everything the player made
+  // (WorldRuntime.repair), the way the desktop's Troubleshooting does; the
+  // world comes back when it was awake or had failed. The phone's payload
+  // carries no manifest, so nothing is checked first (found is null).
+  async function repair(): Promise<Result<RepairResult>> {
+    const plugin = deps.plugin;
+    if (!plugin.repair) return fail(new Error("This version of the app cannot repair its world."));
+    try {
+      const status = await plugin.repair();
+      return { ok: true, found: null, started: status.started === true };
+    } catch (err) {
+      return fail(err);
+    } finally {
+      await announce();
+    }
+  }
+
+  async function diagnostics(): Promise<WorldDiagnostics | null> {
+    const plugin = deps.plugin;
+    if (!plugin.diagnostics) return null;
+    return plugin.diagnostics().catch(() => null);
+  }
+
   return {
     status,
     start,
@@ -483,5 +524,7 @@ export function createLocalWorld(deps: LocalWorldDeps) {
     importPick,
     importCommit,
     importCancel,
+    repair,
+    diagnostics,
   };
 }

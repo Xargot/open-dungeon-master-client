@@ -88,3 +88,17 @@ export async function applyPortalCookies(
 export async function clearPartition(partition: string): Promise<void> {
   await session.fromPartition(partition).clearStorageData();
 }
+
+// The files Chromium cached from servers (the HTTP cache and the compiled
+// script cache) for the given partitions and the shell's own session,
+// leaving cookies, storage and sign-ins where they are: Troubleshooting's
+// "Clear cached files". A partition comes into being on first use, so only
+// the ones the server list knows are passed, never guessed.
+export async function clearCaches(partitions: readonly string[]): Promise<number> {
+  const sessions = [session.defaultSession, ...Array.from(new Set(partitions), (partition) => session.fromPartition(partition))];
+  for (const ses of sessions) {
+    await ses.clearCache();
+    await ses.clearCodeCaches({});
+  }
+  return sessions.length;
+}

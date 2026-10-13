@@ -100,6 +100,7 @@ test("the payload is staged in the shape electron-builder packages whole", async
       `${MODULES_DIR}/next/package.json`,
       `${MODULES_DIR}/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime.so.1`,
       ALIASES_FILE,
+      "odm-payload-manifest.json",
       "odm-payload.json",
       "package.json",
       "public/assets/ambience/rain.mp3",
@@ -119,6 +120,12 @@ test("the payload is staged in the shape electron-builder packages whole", async
     assert.equal(report.localAssets, 1);
     assert.equal(report.modules, 2);
     assert.equal(report.aliases, 2);
+    const manifest = JSON.parse(fs.readFileSync(path.join(outDir, "odm-payload-manifest.json"), "utf8"));
+    assert.equal(manifest.version, 1);
+    assert.equal(report.manifest, Object.keys(manifest.files).length);
+    assert.ok(manifest.files[`${MODULES_DIR}/next/package.json`], "listed as staged, module folders renamed");
+    assert.ok(manifest.files["server.js"].sha256.length === 64);
+    assert.ok(!("odm-payload.json" in manifest.files) && !("odm-payload-manifest.json" in manifest.files), "the marker and the manifest list nothing of themselves");
     assert.ok(report.dropped.includes("docs"));
     assert.equal(fs.readFileSync(path.join(outDir, MODULES_DIR, "better-sqlite3-multiple-ciphers/build/Release/better_sqlite3.node"), "utf8"), "binding");
     // vendor/server is left as it was: the smoke scripts and a dev run use it.

@@ -13,7 +13,7 @@ import {
   showOverlay,
   updateControls,
 } from "./chrome.js";
-import { button, chip, el, icon, spinner } from "./dom.js";
+import { button, chip, copyText, el, icon, input, spinner } from "./dom.js";
 import type { IconName } from "./dom.js";
 import { isGameShowing, mountDeviceSettings } from "./game-screen.js";
 import { offlineToggle, renderHome } from "./home.js";
@@ -24,6 +24,7 @@ import { DEVICE, isAndroid, refresh, refreshFeed, state } from "./state.js";
 import { PAD_LEGEND, deckStatusLine, type DeckChoice } from "../shared/deck.js";
 import type { StoryMemory, StoryMemoryStatus } from "../shared/story-memory.js";
 import { describePreview, formatBytes, type WorldPreview } from "../shared/world-transfer.js";
+import { RESET_PHRASE, describeVerify } from "../shared/diagnostics.js";
 import { startAppTour } from "./tour.js";
 
 function section(iconName: IconName, title: string, detail: string): {
@@ -581,6 +582,225 @@ function memorySection(): HTMLElement | null {
   return card;
 }
 
+// Troubleshooting: the server files the app unpacked for the device world,
+// checked against the ones it shipped with and unpacked again without
+// touching anything the player made; the files cached from servers; a
+// summary for a bug report; the log folder. Each row is offered only where
+// the shell has the action (the phone checks nothing and keeps no log
+// folder to open). The note below the rows lives outside the card like the
+// transfer note: a repair restarts the world, whose status events repaint
+// this screen.
+type TroubleNote =
+  | { kind: "none" }
+  | { kind: "working"; what: string }
+  | { kind: "done"; text: string }
+  | { kind: "error"; message: string }
+  // The reset's question, with the typed word that answers it.
+  | { kind: "reset-confirm" };
+
+const trouble: { note: TroubleNote; busy: boolean; repaint: (() => void) | null; shown: TroubleNote | null } = {
+  note: { kind: "none" },
+  busy: false,
+  repaint: null,
+  shown: null,
+};
+
+function setTrouble(note: TroubleNote, busy = false): void {
+  trouble.note = note;
+  trouble.busy = busy;
+  trouble.repaint?.();
+}
+
+function troubleNote(note: TroubleNote): HTMLElement[] {
+  switch (note.kind) {
+    case "none":
+      return [];
+    case "working": {
+      const line = el("p", "hint memory-working");
+      line.append(spinner(), document.createTextNode(` ${note.what}...`));
+      return [line];
+    }
+    case "done":
+      return [el("p", "hint", note.text)];
+    case "error":
+      return [el("p", "error tt-shake", note.message)];
+    case "reset-confirm": {
+      const [label, field] = input(`Type ${RESET_PHRASE} to confirm`, "text");
+      const go = button("quiet danger", "Set aside and restart", () => void resetApp(field.value), "trash");
+      go.disabled = true;
+      field.addEventListener("input", () => {
+        go.disabled = field.value.trim() !== RESET_PHRASE;
+      });
+      const keep = button("secondary", "Keep everything", () => setTrouble({ kind: "none" }));
+      const actions = el("div", "transfer-actions");
+      actions.append(go, keep);
+      return [
+        el("p", "", "Set aside everything this app keeps on this computer, and restart it empty?"),
+        el(
+          "p",
+          "hint",
+          "Your world and its key, installed worlds, pictures and narration, saved servers and sign-ins all go. Nothing is deleted: they wait in a dated folder beside the app's data folder until you remove it yourself, and the README says how to bring them back. Local AI engines you installed stay.",
+        ),
+        label,
+        actions,
+      ];
+    }
+  }
+}
+
+async function resetApp(phrase: string): Promise<void> {
+  const reset = window.odm.resetApp;
+  if (!reset || trouble.busy || isGameShowing()) return;
+  setTrouble({ kind: "working", what: "Putting your world to sleep and setting its folder aside" }, true);
+  const result = await reset(phrase);
+  // On success the app restarts and this screen is gone.
+  if (!result.ok) setTrouble({ kind: "error", message: result.error });
+}
+
+async function checkFiles(): Promise<void> {
+  const check = window.odm.localVerify;
+  if (!check || trouble.busy) return;
+  setTrouble({ kind: "working", what: "Reading every server file" }, true);
+  const result = await check();
+  if (!result.ok) {
+    setTrouble({ kind: "error", message: result.error });
+    return;
+  }
+  const report = result.report;
+  if (!report) setTrouble({ kind: "done", text: "This build carries no list to check against (a development run)." });
+  else if (!report.unpacked) setTrouble({ kind: "done", text: "Nothing to check yet: the server files are unpacked the first time you enter your world." });
+  else if (report.missing.length + report.changed.length === 0) setTrouble({ kind: "done", text: `All ${report.listed} server files are present and intact.` });
+  else setTrouble({ kind: "done", text: `Server files ${describeVerify(report)} are wrong. Repair puts them back; your campaigns, pictures and installed worlds are kept.` });
+}
+
+async function repairFiles(): Promise<void> {
+  const repair = window.odm.localRepair;
+  if (!repair || trouble.busy || isGameShowing()) return;
+  setTrouble({ kind: "working", what: "Unpacking the server files again" }, true);
+  const result = await repair();
+  if (!result.ok) {
+    setTrouble({ kind: "error", message: result.error });
+  } else {
+    const found = result.found;
+    const wrong = found?.unpacked ? found.missing.length + found.changed.length : 0;
+    const what = wrong
+      ? `Server files ${describeVerify(found)} were wrong and are back in place.`
+      : "The server files are freshly unpacked; nothing was found wrong with them before.";
+    const world = result.started ? "Your world is awake again." : "Your world wakes from the new files the next time you enter it.";
+    setTrouble({ kind: "done", text: `${what} ${world}` });
+  }
+  await refresh();
+  if (isGameShowing() ? state.overlayName === "settings" : state.screenName === "settings") renderSettings();
+}
+
+async function clearCachedFiles(): Promise<void> {
+  const clear = window.odm.clearCaches;
+  if (!clear || trouble.busy) return;
+  setTrouble({ kind: "working", what: "Clearing cached files" }, true);
+  const result = await clear();
+  setTrouble(
+    result.ok
+      ? { kind: "done", text: "Cached files cleared. Pages load fresh from each server next time; your sign-ins and your world are untouched." }
+      : { kind: "error", message: result.error },
+  );
+}
+
+async function copySummary(): Promise<void> {
+  const summary = window.odm.diagnosticSummary;
+  if (!summary || trouble.busy) return;
+  setTrouble({ kind: "working", what: "Gathering the summary" }, true);
+  const { text } = await summary();
+  const copied = await copyText(text);
+  setTrouble(
+    copied
+      ? { kind: "done", text: "Copied. Paste it into your bug report: it names versions, the state of your world and which server files are wrong, and nothing private." }
+      : { kind: "error", message: "The summary could not be copied." },
+  );
+}
+
+function troubleshootingSection(): HTMLElement | null {
+  const bridge = window.odm;
+  if (state.local.state === "unavailable") return null;
+  if (!bridge.localRepair && !bridge.diagnosticSummary) return null;
+  const { card, body } = section(
+    "refresh",
+    "Troubleshooting",
+    "For a world that will not wake, or an app that looks wrong after an update. Nothing here touches your campaigns, pictures, installed worlds or sign-ins.",
+  );
+  const buttons: HTMLButtonElement[] = [];
+  let repairButton: HTMLButtonElement | null = null;
+  const add = (label: string, control: HTMLButtonElement, hint = ""): void => {
+    buttons.push(control);
+    const line = row(label, control);
+    if (hint) line.append(el("p", "hint", hint));
+    body.append(line);
+  };
+  if (bridge.localVerify) {
+    add("Check the server files this app unpacked against the ones it shipped with", button("secondary", "Check files", () => void checkFiles(), "check"));
+  }
+  if (bridge.localRepair) {
+    repairButton = button("secondary", "Repair", () => void repairFiles(), "refresh");
+    add(
+      "Unpack the server files again, keeping everything you made. Your world restarts if it is awake",
+      repairButton,
+      isGameShowing() ? "Leave the table first: the world restarts to take the fresh files." : "",
+    );
+  }
+  if (bridge.clearCaches) {
+    add("Clear the files the app cached from servers. Sign-ins, saved servers and your world stay", button("secondary", "Clear cached files", () => void clearCachedFiles(), "trash"));
+  }
+  if (bridge.diagnosticSummary) {
+    add(
+      "Copy a summary for a bug report: versions, the state of your world, which server files are wrong. No names, keys or campaign text",
+      button("secondary", "Copy summary", () => void copySummary(), "copy"),
+    );
+  }
+  if (bridge.showLogs) {
+    add("Open the folder that holds the app's log files", button("secondary", "Show logs", () => void bridge.showLogs?.(), "scroll"));
+  }
+  // The one row that takes the world out of the app's hands sits last,
+  // in red, held while a table is open, and asks for a typed word.
+  let resetButton: HTMLButtonElement | null = null;
+  if (bridge.resetApp) {
+    resetButton = button("quiet danger", "Reset the app", () => setTrouble({ kind: "reset-confirm" }), "trash");
+    add(
+      "Start over: set everything this app keeps on this computer aside (nothing is deleted) and restart it empty",
+      resetButton,
+      isGameShowing() ? "Leave the table first." : "",
+    );
+  }
+  const status = el("div", "memory-status");
+  status.setAttribute("aria-live", "polite");
+  body.append(status);
+  const came = state.appInfo?.reset;
+  if (came) {
+    body.append(
+      el(
+        "p",
+        "hint",
+        `This start set your previous data aside at ${came.aside}.${came.left.length ? ` Left behind, still held open: ${came.left.join(", ")}.` : ""} Bring it back or remove it as the README says.`,
+      ),
+    );
+  }
+
+  let shownNote: TroubleNote | null = null;
+  const paint = (): void => {
+    for (const btn of buttons) btn.disabled = trouble.busy || ((btn === repairButton || btn === resetButton) && isGameShowing());
+    if (shownNote === trouble.note) return;
+    shownNote = trouble.note;
+    const nodes = troubleNote(trouble.note);
+    const line = el("div", trouble.shown === trouble.note ? "memory-line settled" : "memory-line");
+    trouble.shown = trouble.note;
+    line.append(...nodes);
+    status.replaceChildren(...(nodes.length ? [line] : []));
+  };
+  trouble.repaint = () => {
+    if (card.isConnected) paint();
+  };
+  paint();
+  return card;
+}
+
 function homeSection(): HTMLElement {
   const { card, body } = section("scroll", "Title screen", "");
   body.append(row("Hide the save slots of hosts that are offline", offlineToggle(() => renderSettings())));
@@ -640,6 +860,7 @@ export function renderSettings(): void {
   // (running), so those repaints are skipped and applyMemory settles it.
   if (again && memory.busy) return;
   if (!again && !memory.busy) memory.note = { kind: "none" };
+  if (!again && !trouble.busy) trouble.note = { kind: "none" };
   const sections = (): (HTMLElement | null)[] => [
     intro("Settings", "The app, your device world, and the way home."),
     audioSection(),
@@ -650,6 +871,7 @@ export function renderSettings(): void {
     memorySection(),
     worldsSection(),
     signInsSection(),
+    troubleshootingSection(),
     homeSection(),
     helpSection(),
     serversNote(),

@@ -4,7 +4,7 @@
 // sit on screen, A presses, B backs out, the shoulders talk, and Steam's
 // keyboard comes up for text boxes. Nothing here runs until a pad speaks.
 import { PadReader, type PadAction, type PadSnapshot } from "../shared/pad-input.js";
-import { pickFirst, pickNext, type Box, type Direction } from "../shared/spatial-nav.js";
+import { ownArrowKey, pickFirst, pickNext, type Box, type Direction } from "../shared/spatial-nav.js";
 
 export interface PadHooks {
   // The shell's own way back (app.ts): its layers first, then the world's
@@ -186,10 +186,11 @@ export function startGamepad(hooks: PadHooks): void {
       fire(from, "change");
       return;
     }
-    // A drawn slider (the kit's level controls) steps on its arrow keys.
-    if ((dir === "left" || dir === "right") && from.getAttribute("role") === "slider") {
-      const key = dir === "right" ? "ArrowRight" : "ArrowLeft";
-      from.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, bubbles: true, cancelable: true }));
+    // A drawn slider (the kit's level controls) and a line between the
+    // table's panels step on their arrow keys (ownArrowKey).
+    const own = ownArrowKey(from.getAttribute("role"), from.getAttribute("aria-orientation"), dir);
+    if (own) {
+      from.dispatchEvent(new KeyboardEvent("keydown", { key: own, code: own, bubbles: true, cancelable: true }));
       return;
     }
     const list = candidates(scope()).filter((element) => element !== from);

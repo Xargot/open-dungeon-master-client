@@ -161,8 +161,8 @@ function drawDetail(
   const same = current.id === card.id;
   const story = pick("Story model", same ? current.model : "", false);
   const utility = pick("Bookkeeping model (summaries, Ask)", same ? current.utilityModel : "", true);
-  // Fast where the program runs the chosen model at it: Claude Code on its
-  // Opus models, Codex where its model list says so.
+  // Fast where the program runs the chosen model at it: Claude Code and
+  // Codex each say so per model in the list the server probed.
   const speed = speedChoice(same && current.fast === true);
   const offerFast = () =>
     speed.offer(

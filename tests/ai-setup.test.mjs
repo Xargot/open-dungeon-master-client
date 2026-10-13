@@ -7,7 +7,6 @@ import {
   DEFAULT_MODEL,
   FAST_COST_NOTE,
   NO_SAVED_AI,
-  claudeFastModel,
   harnessFastModel,
   harnessPatch,
   openAiFastModel,
@@ -115,13 +114,20 @@ test("the saved Fast choice is read back for the key and for an agent", () => {
   assert.equal(agent.fast, true);
 });
 
-test("an agent runs Fast on Claude Code's Opus models and where Codex lists the tier", () => {
-  const codexModels = [{ id: "gpt-6-sol", fast: true }, { id: "gpt-5.4", fast: false }];
+// The models each program listed when the server probed it (server
+// src/lib/harness/adapters): Claude Code marks Fast per model in its
+// initialize answer, Codex in its service tiers.
+const codexModels = [{ id: "gpt-6-sol", fast: true }, { id: "gpt-5.4", fast: false }];
+const claudeModels = [{ id: "opus", fast: true }, { id: "sonnet", fast: false }, { id: "haiku" }];
+
+test("an agent runs Fast where Claude Code or Codex lists the tier for the model", () => {
   assert.equal(harnessFastModel("codex", "gpt-6-sol", codexModels), true);
   assert.equal(harnessFastModel("codex", "gpt-5.4", codexModels), false);
   assert.equal(harnessFastModel("codex", "", codexModels), false, "the program's own default is not known to have it");
-  assert.equal(harnessFastModel("claude", "opus", []), true);
-  assert.equal(harnessFastModel("claude", "sonnet", []), false);
+  assert.equal(harnessFastModel("claude", "opus", claudeModels), true);
+  assert.equal(harnessFastModel("claude", "sonnet", claudeModels), false);
+  assert.equal(harnessFastModel("claude", "claude-opus-5", claudeModels), false, "a saved model this sign-in does not list");
+  assert.equal(harnessFastModel("claude", "opus", []), false, "a Claude Code that listed nothing offers nothing");
   assert.equal(harnessFastModel("opencode", "gpt-6-sol", codexModels), false);
   assert.equal(harnessFastModel("grok", "grok-5", []), false);
 });
@@ -138,12 +144,14 @@ test("the door's Fast models are the server's", { skip: !fs.existsSync(serverSpe
   for (const name of names) {
     assert.equal(openAiFastModel(name), server.openAiFastModel(name), `OpenAI: ${JSON.stringify(name)}`);
   }
-  const claude = [
-    "opus", "Opus", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-8-20260301", "opus[1m]",
-    "claude-opus-4-7", "sonnet", "claude-sonnet-5-5", "haiku", "",
-  ];
-  for (const name of claude) {
-    assert.equal(claudeFastModel(name), server.claudeFastModel(name), `Claude: ${JSON.stringify(name)}`);
+  for (const [harnessId, models] of [["claude", claudeModels], ["codex", codexModels], ["opencode", codexModels], ["grok", []]]) {
+    for (const model of ["opus", "sonnet", "haiku", "claude-opus-5", "gpt-6-sol", "gpt-5.4", ""]) {
+      assert.equal(
+        harnessFastModel(harnessId, model, models),
+        server.agentSpeedEligibility({ harnessId, model, models }).ok,
+        `${harnessId}: ${JSON.stringify(model)}`,
+      );
+    }
   }
   assert.equal(FAST_COST_NOTE, server.FAST_COST_NOTE, "the price is said in the same words");
 });

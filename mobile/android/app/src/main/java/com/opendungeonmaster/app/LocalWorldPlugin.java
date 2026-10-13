@@ -114,6 +114,34 @@ public class LocalWorldPlugin extends Plugin {
         call.resolve(result);
     }
 
+    /**
+     * Unpacks the server files again, keeping everything the player made
+     * (Settings, Troubleshooting). Resolves the status with <code>started</code>:
+     * whether the world was started again afterwards.
+     */
+    @PluginMethod
+    public void repair(PluginCall call) {
+        Thread worker = new Thread(() -> {
+            try {
+                boolean started = runtime().repair();
+                JSObject result = toJS(runtime().status());
+                result.put("started", started);
+                call.resolve(result);
+            } catch (IOException e) {
+                call.reject(e.getMessage() != null ? e.getMessage() : "Could not repair the world.");
+            } catch (RuntimeException e) {
+                call.reject("Could not repair the world: " + e.getMessage());
+            }
+        }, "odm-world-repair");
+        worker.start();
+    }
+
+    /** The facts behind Troubleshooting's summary (WorldRuntime.diagnostics). */
+    @PluginMethod
+    public void diagnostics(PluginCall call) {
+        call.resolve(toJS(runtime().diagnostics()));
+    }
+
     // ---------- moving the world (src/shared/world-transfer.ts) ----------
     //
     // The world's own server packs and checks the archive in its
