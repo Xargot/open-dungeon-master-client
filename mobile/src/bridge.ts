@@ -9,7 +9,7 @@ import { Directory, Filesystem } from "@capacitor/filesystem";
 import { LocalNotifications } from "@capacitor/local-notifications";
 import { Preferences } from "@capacitor/preferences";
 import { plainPreferences, secretStore } from "./secret-store";
-import { loadServerSecrets, migrateSecret, storeServerSecrets, withoutSecrets } from "./secret-store-core";
+import { loadServerSecrets, migrateSecret, readServerList, storeServerSecrets, withoutSecrets } from "./secret-store-core";
 import { Share } from "@capacitor/share";
 import { BackgroundColor, InAppBrowser, ToolBarType } from "@capgo/inappbrowser";
 import { createWebBluetooth } from "./ble-polyfill-core";
@@ -117,14 +117,9 @@ const TIMEOUT_MS = 10_000;
 let knownServerIds: string[] = [];
 
 async function loadServers(): Promise<StoredServer[]> {
-  let parsed: StoredServer[] = [];
-  try {
-    const { value } = await Preferences.get({ key: SERVERS_KEY });
-    const raw = value ? (JSON.parse(value) as StoredServer[]) : [];
-    parsed = Array.isArray(raw) ? raw : [];
-  } catch {
-    return [];
-  }
+  // A damaged list is kept under a dated key before it reads as empty, so
+  // the next save cannot write over the only copy (secret-store-core.ts).
+  const parsed = await readServerList<StoredServer>(plainPreferences, SERVERS_KEY);
   // Each entry's token and made-up password come from the secret store; a
   // list saved before the store existed has them moved in, and is saved
   // again without them.
@@ -168,7 +163,7 @@ interface HttpReply {
 async function http(
   origin: string,
   pathname: string,
-  init: { method?: string; token?: string; body?: unknown } = {},
+  init: { method?: string; token?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<HttpReply> {
   try {
     const response = await CapacitorHttp.request({
@@ -180,7 +175,7 @@ async function http(
       },
       data: init.body,
       connectTimeout: TIMEOUT_MS,
-      readTimeout: TIMEOUT_MS,
+      readTimeout: init.timeoutMs ?? TIMEOUT_MS,
     });
     return { status: response.status, data: response.data };
   } catch {
@@ -303,6 +298,14 @@ async function patchAdminSettings(origin: string, token: string, patch: object):
 async function getAdminSettings(origin: string, token: string): Promise<unknown> {
   const reply = await http(origin, "/api/admin/settings", { token });
   if (reply.status !== 200) throw new Error(errorText(reply, "Reading world settings failed."));
+  return reply.data;
+}
+
+// The model listings the OpenAI door asks (src/shared/ai-setup.ts). The
+// world's server asks the key's provider in turn, so it is given longer.
+async function postAdmin(origin: string, token: string, path: string, body: object): Promise<unknown> {
+  const reply = await http(origin, path, { method: "POST", token, body, timeoutMs: 30_000 });
+  if (reply.status !== 200) throw new Error(errorText(reply, "The world's server refused the request."));
   return reply.data;
 }
 
@@ -707,6 +710,7 @@ const localWorld = createLocalWorld({
   tokenIsValid,
   patchAdminSettings,
   getAdminSettings,
+  postAdmin,
   async plantSession(origin, token) {
     await clearPortalCookies(origin);
     await CapacitorCookies.setCookie({ url: origin, key: "odm_session", value: token });
@@ -1012,14 +1016,16 @@ listeners.add((event) => {
 });
 
 // The phone's own world goes to sleep a little after the game web view
-// closes, unless it is shared, the app's own screens are on it, or a web
-// view is up again. Waking it later is what every door here does anyway.
+// closes, unless it is shared (online or on the Wi-Fi), the app's own
+// screens are on it, or a web view is up again. Waking it later is what
+// every door here does anyway.
 const idleWorld = createIdleStopper({
   graceMs: IDLE_STOP_GRACE_MS,
-  inspect: () => {
+  inspect: async () => {
     const tunnel = shareTunnel.snapshot().state;
+    const onWifi = !!(await localWorld.status().catch(() => null))?.lanOrigin;
     return {
-      shared: tunnel === "running" || tunnel === "starting",
+      shared: tunnel === "running" || tunnel === "starting" || onWifi,
       nativeWorldOpen: window.odmMountedHostId === LOCAL_HOST_ID,
       webViewOpen: gameWebViewOpen,
       ownWorldLeft: closedOwnWorld,
@@ -1736,6 +1742,7 @@ const bridge: OdmBridge = {
     }),
   localConfigureAi: (setup) => localWorld.configureAi(setup),
   localAiSaved: () => localWorld.aiSaved(),
+  localAiModels: (apiKey) => localWorld.aiModels(String(apiKey ?? "")),
   // Agent programs (Claude Code, Codex, ...) are started by a desktop's own
   // server; a phone has none to start.
   localHarnessStatus: async () => ({ ok: false, error: "Agent programs run on a computer, not a phone." }),
@@ -1784,10 +1791,10 @@ const bridge: OdmBridge = {
     return { ok: true, tunnel: status };
   },
   shareStop: async () => ({ ok: true, tunnel: await shareTunnel.stop() }),
-  // The phone's world answers on its Wi-Fi from the moment it runs; there
-  // is no switch to turn, so both answer with where it already is.
-  lanStart: async () => ({ ok: true, status: await localWorld.status() }),
-  lanStop: async () => ({ ok: true, status: await localWorld.status() }),
+  // The phone's world answers on the phone alone until it is shared on
+  // the Wi-Fi, as on the desktop (local-world.ts setLanSharing).
+  lanStart: () => localWorld.setLanSharing(true),
+  lanStop: () => localWorld.setLanSharing(false),
   localAiScan: async () => fail(new Error("Local AI is desktop-only.")),
   localAiInstall: async () => fail(new Error("Local AI is desktop-only.")),
   localAiInstallComfy: async () => fail(new Error("Local AI is desktop-only.")),

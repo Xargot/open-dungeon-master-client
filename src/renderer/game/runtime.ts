@@ -185,6 +185,18 @@ function mustFetch(client: HostClient): boolean {
   return window.location.protocol === "https:" && client.origin.startsWith("http:");
 }
 
+// A protected picture the host refused (a deleted upload answers 404) never
+// reaches the element: it is left with no address, so the browser fires no
+// error and a page's fallback (TokenFace's candidates, the story log's class
+// plate) never moves on. The refusal is told to the element as the error the
+// browser would have fired, marked so guardBogusErrors lets it through.
+// Pictures only: a sound's failure has always been left silent here.
+function reportRefused(element: Element): void {
+  if (!(element instanceof HTMLImageElement)) return;
+  element.setAttribute("data-odm-failed", "");
+  element.dispatchEvent(new Event("error"));
+}
+
 // Media elements: art the app carries is pointed at the app's own copy; a
 // public path is pointed at the host directly; a protected one is loaded
 // through the token and swapped for a blob.
@@ -194,6 +206,7 @@ function fixMedia(element: Element): void {
     const value = element.getAttribute(attr);
     if (!value || !isRootRelative(value)) continue;
     if (element.getAttribute(`data-odm-${attr}`) === value) continue;
+    element.removeAttribute("data-odm-failed");
     const local = localAsset(value);
     if (local) {
       element.setAttribute(`data-odm-${attr}`, value);
@@ -206,23 +219,36 @@ function fixMedia(element: Element): void {
       element.setAttribute(attr, `${client.origin}${value}`);
       continue;
     }
-    void objectUrlFor(client, value).then((url) => {
-      if (!url || element.getAttribute(`data-odm-${attr}`) !== value) return;
-      hold(element, url);
-      element.setAttribute(attr, url);
-    });
+    const current = () => element.getAttribute(`data-odm-${attr}`) === value;
+    void objectUrlFor(client, value).then(
+      (url) => {
+        if (!current()) return;
+        if (!url) {
+          reportRefused(element);
+          return;
+        }
+        hold(element, url);
+        element.setAttribute(attr, url);
+      },
+      () => {
+        if (current()) reportRefused(element);
+      },
+    );
   }
 }
 
 // The address a media element should really load: the host for a public
 // path, an object URL (fetched with the token) for a protected one. The
 // second case is asynchronous, so the caller gets the object URL later.
-function resolveMedia(client: HostClient, value: string, apply: (url: string) => void): string | null {
+function resolveMedia(
+  client: HostClient,
+  value: string,
+  apply: (url: string) => void,
+  refused: () => void = () => {},
+): string | null {
   if (!isRootRelative(value)) return null;
   if (!mustFetch(client) && PUBLIC_PREFIXES.some((prefix) => value.startsWith(prefix))) return `${client.origin}${value}`;
-  void objectUrlFor(client, value).then((url) => {
-    if (url) apply(url);
-  });
+  void objectUrlFor(client, value).then((url) => (url ? apply(url) : refused()), refused);
   return null;
 }
 
@@ -255,17 +281,25 @@ function patchMediaSetters(): void {
           return;
         }
         this.setAttribute("data-odm-src", raw);
+        this.removeAttribute("data-odm-failed");
         // Narration still being rendered is read as it arrives rather than
         // fetched whole, so its first line is heard at once.
         if (this instanceof HTMLMediaElement && isLiveNarrationPath(raw) && canStreamAudio()) {
           nativeSet.call(this, liveAudioUrl(() => patchedFetch(raw, { cache: "no-store" })));
           return;
         }
-        const direct = resolveMedia(client, raw, (url) => {
-          if (this.getAttribute("data-odm-src") !== raw) return;
-          hold(this, url);
-          nativeSet.call(this, url);
-        });
+        const direct = resolveMedia(
+          client,
+          raw,
+          (url) => {
+            if (this.getAttribute("data-odm-src") !== raw) return;
+            hold(this, url);
+            nativeSet.call(this, url);
+          },
+          () => {
+            if (this.getAttribute("data-odm-src") === raw) reportRefused(this);
+          },
+        );
         if (direct) nativeSet.call(this, direct);
       },
     });
@@ -410,6 +444,8 @@ function guardBogusErrors(): void {
     (event) => {
       const element = event.target;
       if (!(element instanceof Element) || !active) return;
+      // The host's own refusal, told by reportRefused: real news for the page.
+      if (element.hasAttribute("data-odm-failed")) return;
       const failed = (element as HTMLImageElement).currentSrc || element.getAttribute("src") || element.getAttribute("href") || "";
       let path = "";
       try {

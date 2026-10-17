@@ -15,6 +15,9 @@ function harness(overrides: {
   tokenValid?: boolean;
   loginFails?: boolean;
   adminSettings?: unknown;
+  // What the world's admin listings answer, by path and role (a model
+  // listing's `recommended`, or the setup's story listing).
+  listings?: (path: string, body: { role?: string }) => unknown;
 } = {}) {
   const world: WorldStatus = {
     available: true,
@@ -30,6 +33,7 @@ function harness(overrides: {
   const calls: string[] = [];
   const opened: string[] = [];
   const patches: object[] = [];
+  const posted: Array<{ path: string; body: object }> = [];
   const deps: LocalWorldDeps = {
     plugin: {
       status: async () => ({ ...world }),
@@ -65,13 +69,17 @@ function harness(overrides: {
       patches.push(patch);
     },
     getAdminSettings: async () => overrides.adminSettings ?? null,
+    postAdmin: async (_origin, _token, path, body) => {
+      posted.push({ path, body });
+      return overrides.listings ? overrides.listings(path, body as { role?: string }) : { models: [], recommended: "" };
+    },
     open: async (origin, token, joinCode) => {
       opened.push(`${origin}|${token}|${joinCode}`);
     },
     emit: () => undefined,
     randomSecret: () => "minted-secret",
   };
-  return { deps, calls, opened, patches, profile: () => profile, world };
+  return { deps, calls, opened, patches, posted, profile: () => profile, world };
 }
 
 test("a fresh world starts the server and asks for a name", async () => {
@@ -194,18 +202,48 @@ const SIGNED_IN = {
 };
 
 test("the first OpenAI key is saved for the whole device, text and pictures", async () => {
-  const h = harness(SIGNED_IN);
+  const h = harness({
+    ...SIGNED_IN,
+    listings: (_path, body) => ({ models: [], recommended: body.role === "image" ? "listed-painter" : body.role === "dictation" ? "listed-ears" : "" }),
+  });
   const world = createLocalWorld(h.deps);
   assert.deepEqual(await world.aiSaved(), { keySaved: false, model: "", utilityModel: "" });
-  const blank = await world.configureAi({ choice: "openai", apiKey: " ", model: "", utilityModel: "" });
+  const blank = await world.configureAi({ choice: "openai", apiKey: " ", model: "my-storyteller", utilityModel: "" });
   assert.equal(blank.ok, false, "no key saved yet, so a blank one is refused");
-  const saved = await world.configureAi({ choice: "openai", apiKey: "sk-1", model: "", utilityModel: "" });
-  assert.equal(saved.ok, true);
-  const patch = h.patches.at(-1) as { text: Record<string, string>; images: Record<string, string> };
+  // No model is invented for the player (the server names none either).
+  const unpicked = await world.configureAi({ choice: "openai", apiKey: "sk-1", model: "", utilityModel: "" });
+  assert.equal(unpicked.ok, false);
+  assert.equal(h.patches.length, 0);
+  const saved = await world.configureAi({ choice: "openai", apiKey: "sk-1", model: "my-storyteller", utilityModel: "" });
+  assert.deepEqual(saved, { ok: true });
+  const patch = h.patches[0] as { text: Record<string, string>; images: Record<string, string> };
   assert.equal(patch.text.customApiKey, "sk-1");
   assert.equal(patch.text.utilityApiKey, "sk-1");
+  assert.equal(patch.text.customModel, "my-storyteller");
   assert.equal(patch.images.openaiApiKey, "sk-1");
   assert.equal(patch.images.defaultBackend, "openai");
+  // Then the picture and transcription models, from the key's own list on
+  // the world's server, so a phone's only painter works straight away.
+  assert.deepEqual(h.patches[1], { images: { openaiModel: "listed-painter" }, speech: { sttOpenaiModel: "listed-ears" } });
+  assert.deepEqual(h.posted.map((entry) => entry.path), ["/api/admin/models", "/api/admin/models"]);
+});
+
+test("a key whose list settles no picture model is saved, and the player is told where to pick one", async () => {
+  const h = harness({ ...SIGNED_IN, listings: () => ({ models: [], recommended: "" }) });
+  const result = await createLocalWorld(h.deps).configureAi({ choice: "openai", apiKey: "sk-1", model: "my-storyteller", utilityModel: "" });
+  assert.equal(result.ok, true);
+  assert.match(result.ok ? result.notice ?? "" : "", /Admin > Image generation/);
+  assert.equal(h.patches.length, 1, "only the key and the storyteller were saved");
+});
+
+test("the form lists the storyteller models the key offers", async () => {
+  const h = harness({
+    ...SIGNED_IN,
+    listings: (path) => (path === "/api/admin/setup" ? { ok: true, models: [{ id: "model-a", label: "Model A" }], recommended: "model-a" } : null),
+  });
+  const listed = await createLocalWorld(h.deps).aiModels(" sk-typed ");
+  assert.deepEqual(listed, { ok: true, models: [{ id: "model-a", label: "Model A" }], recommended: "model-a" });
+  assert.deepEqual(h.posted.at(-1), { path: "/api/admin/setup", body: { action: "models", provider: "openai", apiKey: "sk-typed" } });
 });
 
 test("changing the model keeps the key the device already holds", async () => {
@@ -224,10 +262,20 @@ test("changing the model keeps the key the device already holds", async () => {
     },
   });
   const world = createLocalWorld(h.deps);
-  assert.deepEqual(await world.aiSaved(), { keySaved: true, model: "gpt-5.1", utilityModel: "gpt-5-mini" });
+  assert.deepEqual(await world.aiSaved(), {
+    keySaved: true,
+    model: "gpt-5.1",
+    utilityModel: "gpt-5-mini",
+    // Story AI opens on what is already set (client PR 62).
+    summary: {
+      story: "OpenAI tells the story (gpt-5.1), on your key.",
+      pictures: "Painted placeholders until something can paint.",
+      narration: "Read aloud when a speech engine is found here.",
+    },
+  });
   const result = await world.configureAi({ choice: "openai", apiKey: "", model: "gpt-5.4-mini", utilityModel: "" });
   assert.equal(result.ok, true);
-  const patch = h.patches.at(-1) as { text: Record<string, string>; images: Record<string, string> };
+  const patch = h.patches[0] as { text: Record<string, string>; images: Record<string, string> };
   assert.equal(patch.text.customModel, "gpt-5.4-mini");
   // Omitted, not blank: the server reads a missing key as "keep" and "" as "clear".
   assert.equal("customApiKey" in patch.text, false);
@@ -365,4 +413,43 @@ test("an older native side cannot repair, and says so", async () => {
   const result = await createLocalWorld(h.deps).repair();
   assert.equal(result.ok, false);
   assert.equal(await createLocalWorld(h.deps).diagnostics(), null);
+});
+
+test("sharing on the Wi-Fi restarts the world there and points in-game invites at it", async () => {
+  const h = harness({
+    world: { state: "running", origin: "http://127.0.0.1:3210", firstRun: false },
+    profile: { username: "kaleb", token: "tok", tokenExpiresAt: "2030-01-01T00:00:00.000Z", secret: "s" },
+    tokenValid: true,
+  });
+  h.world.lanOrigin = "";
+  const asked: boolean[] = [];
+  h.deps.plugin.lanSharing = async ({ on }) => {
+    asked.push(on);
+    h.world.lanOrigin = on ? "http://192.168.1.9:3210" : "";
+    h.world.sharedOnLan = on;
+    return { ...h.world };
+  };
+  const world = createLocalWorld(h.deps);
+  const on = await world.setLanSharing(true);
+  assert.ok(on.ok);
+  assert.equal(on.ok && on.status.lanOrigin, "http://192.168.1.9:3210");
+  assert.deepEqual(h.patches.at(-1), { publicUrl: "http://192.168.1.9:3210", voiceChat: { enabled: "on", mode: "mesh" } });
+  const off = await world.setLanSharing(false);
+  assert.ok(off.ok);
+  assert.equal(off.ok && off.status.lanOrigin, "");
+  assert.deepEqual(h.patches.at(-1), { publicUrl: "", voiceChat: { enabled: "on", mode: "mesh" } });
+  assert.deepEqual(asked, [true, false]);
+});
+
+test("a phone with no Wi-Fi address says so, and an older native side cannot share on the Wi-Fi", async () => {
+  const h = harness({ world: { state: "running", origin: "http://127.0.0.1:3210" } });
+  h.deps.plugin.lanSharing = async () => {
+    throw new Error("This phone is not on a Wi-Fi network right now.");
+  };
+  assert.deepEqual(await createLocalWorld(h.deps).setLanSharing(true), {
+    ok: false,
+    error: "This phone is not on a Wi-Fi network right now.",
+  });
+  const older = harness();
+  assert.equal((await createLocalWorld(older.deps).setLanSharing(true)).ok, false);
 });

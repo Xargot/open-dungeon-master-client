@@ -197,7 +197,13 @@ export function catalogEntry(tierId: string): CatalogEntry | null {
 // a transcript of a long-lived production tuning for exactly this model and
 // use (ODM narration): non-thinking sampling with presence penalty 1.5,
 // KV at q8_0, thinking allowed per-request but hard-budgeted so a runaway
-// deliberation cannot stall a turn for minutes.
+// deliberation cannot stall a turn for minutes. The presence penalty is the
+// tuning's, not what ODM runs with: the server sends presence_penalty 0 on
+// every request to a local endpoint (its model-client.ts and
+// sampling-logic.ts, deliberately, since a positive penalty over the long DM
+// prompt suppresses tool calls), and a per-request value overrides the
+// preset, so the 1.5 below never reaches ODM's own calls. Repetition is
+// stopped on the server, by its stream guard, not here.
 export function presetFor(
   entry: CatalogEntry,
   modelPath: string,

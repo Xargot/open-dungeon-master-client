@@ -25,6 +25,7 @@ import { PAD_LEGEND, deckStatusLine, type DeckChoice } from "../shared/deck.js";
 import type { StoryMemory, StoryMemoryStatus } from "../shared/story-memory.js";
 import { describePreview, formatBytes, type WorldPreview } from "../shared/world-transfer.js";
 import { RESET_PHRASE, describeVerify } from "../shared/diagnostics.js";
+import { forgetSteamNote, steamRows } from "./steam.js";
 import { startAppTour } from "./tour.js";
 
 function section(iconName: IconName, title: string, detail: string): {
@@ -56,7 +57,7 @@ function audioSection(): HTMLElement {
   const { card, body } = section(
     "sliders",
     "Audio and dice",
-    "The microphone and output this device uses, how loud each part of the table is, and the dice on it. Changes reach a call or a table already in progress.",
+    "The microphone and output this device uses, the key that holds the table's mic, how loud each part of the table is, and the dice on it. Changes reach a call or a table already in progress.",
   );
   const host = el("div", "game-root device-settings");
   host.append(spinner());
@@ -108,7 +109,7 @@ function deckSection(): HTMLElement | null {
     btn.setAttribute("aria-checked", String(deck.choice === choice));
     choices.append(btn);
   }
-  body.append(row("Deck layout. Auto turns it on on a Steam Deck and in Steam's Game Mode", choices));
+  body.append(row("Deck layout. Auto turns it on on a Steam Deck and in Steam's Game Mode", choices), ...steamRows());
   const legend = el("dl", "pad-legend");
   for (const entry of PAD_LEGEND) legend.append(el("dt", "", entry.control), el("dd", "", entry.does));
   body.append(el("span", "settings-label", "The controller, on every screen and at the table"), legend);
@@ -146,7 +147,7 @@ function deviceSection(): HTMLElement | null {
   if (local.firstRun) return card;
   body.append(
     row(
-      "Who narrates: a human, your OpenAI key" + (isAndroid ? "" : ", or a local model"),
+      "Who tells the story: a human, your OpenAI key" + (isAndroid ? "" : ", or a local model"),
       button("secondary", "Story AI", () => renderLocalAi(true), "sparkles"),
     ),
   );
@@ -861,22 +862,61 @@ export function renderSettings(): void {
   if (again && memory.busy) return;
   if (!again && !memory.busy) memory.note = { kind: "none" };
   if (!again && !trouble.busy) trouble.note = { kind: "none" };
-  const sections = (): (HTMLElement | null)[] => [
-    intro("Settings", "The app, your device world, and the way home."),
-    audioSection(),
-    deckSection(),
-    appSection(),
-    deviceSection(),
-    transferSection(),
-    memorySection(),
-    worldsSection(),
-    signInsSection(),
-    troubleshootingSection(),
-    homeSection(),
-    helpSection(),
-    serversNote(),
-    legalSection(),
-  ];
+  if (!again) forgetSteamNote();
+  // Four everyday jobs, each under its own heading and one tap away from
+  // the row at the top: what this device plays like, the world it hosts,
+  // the hosts it signs in to, and help and repair (which is never asked of
+  // anyone before they can play). Every card is the one it always was.
+  const sections = (): (HTMLElement | null)[] => {
+    const groups: Array<{ id: string; label: string; detail: string; cards: (HTMLElement | null)[] }> = [
+      {
+        id: "settings-device",
+        label: "Playing on this device",
+        detail: "Only on this device: sound, microphone, dice, controllers and the title screen.",
+        cards: [audioSection(), deckSection(), homeSection()],
+      },
+      {
+        id: "settings-world",
+        label: `Your world on this ${isAndroid ? "device" : "computer"}`,
+        detail: "The world this app hosts: who plays there, its Story AI, its memory, and moving it.",
+        cards: [deviceSection(), memorySection(), transferSection()],
+      },
+      {
+        id: "settings-accounts",
+        label: "Accounts and connections",
+        detail: "Servers and friends' worlds this app signs in to.",
+        cards: [signInsSection(), worldsSection(), serversNote()],
+      },
+      {
+        id: "settings-help",
+        label: "Help and maintenance",
+        detail: "Guides, updates, and repairs if something goes wrong.",
+        cards: [helpSection(), appSection(), troubleshootingSection(), legalSection()],
+      },
+    ];
+    const shown = groups.filter((group) => group.cards.some(Boolean));
+    const contents = el("nav", "settings-contents");
+    contents.setAttribute("aria-label", "Settings sections");
+    for (const group of shown) {
+      const jump = el("button", "settings-jump", group.label);
+      jump.type = "button";
+      jump.addEventListener("click", () => {
+        const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        document.getElementById(group.id)?.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "start" });
+      });
+      contents.append(jump);
+    }
+    return [
+      intro("Settings", "What this device plays like, the world it hosts, your sign-ins, and help."),
+      contents,
+      ...shown.flatMap((group) => {
+        const head = el("div", "settings-group");
+        head.id = group.id;
+        head.append(el("h2", "settings-group-title", group.label), el("p", "settings-group-detail", group.detail));
+        return [head, ...group.cards];
+      }),
+    ];
+  };
   // Inside a world, Settings opens over the table so the call and the
   // stream keep running; the way back is to the game, not home.
   if (isGameShowing()) {

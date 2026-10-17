@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { LOCAL_SERVER_ID, ServerStore } from "../dist/main/servers.js";
+import { LOCAL_SERVER_ID, registryPatience, ServerStore } from "../dist/main/servers.js";
 
 const crypt = {
   encrypt: (plain) => `enc:${plain}`,
@@ -196,8 +196,94 @@ test("registry persists across instances and survives corruption", () => {
   assert.equal(reopened.token(entry.id), "tok");
 
   fs.writeFileSync(path.join(dir, "servers.json"), "{not json");
-  const corrupted = new ServerStore(path.join(dir, "servers.json"), crypt);
-  assert.deepEqual(corrupted.list(), []);
+  const corrupted = new ServerStore(path.join(dir, "servers.json"), crypt, () => {});
+  assert.equal(corrupted.token(entry.id), "tok", "the copy from the last clean start came back");
+});
+
+const quiet = () => {};
+const damagedCopies = (dir) => fs.readdirSync(dir).filter((name) => name.startsWith("servers.json.damaged-"));
+
+test("a damaged registry is kept aside and the last clean start's copy comes back, the device world's password with it", () => {
+  const { store, dir } = freshStore();
+  const file = path.join(dir, "servers.json");
+  store.upsert({ id: LOCAL_SERVER_ID, origin: "local", name: "This computer", username: "kaleb", token: "t", tokenExpiresAt: future, secret: "made-up" });
+  store.upsert({ origin: "https://a.example", name: "A", username: "kaleb", token: "tok", tokenExpiresAt: future });
+  // The next start reads it cleanly and keeps a copy.
+  assert.equal(new ServerStore(file, crypt, quiet).list().length, 1);
+  fs.writeFileSync(file, "\0\0\0\0");
+  const lines = [];
+  const next = new ServerStore(file, crypt, (line) => lines.push(line));
+  assert.equal(next.secret(LOCAL_SERVER_ID), "made-up");
+  assert.equal(next.list()[0].origin, "https://a.example");
+  assert.equal(damagedCopies(dir).length, 1);
+  assert.equal(fs.readFileSync(path.join(dir, damagedCopies(dir)[0]), "utf8"), "\0\0\0\0");
+  assert.match(lines.join("\n"), /damaged; kept as servers\.json\.damaged-.*from the last start are back/);
+});
+
+test("a damaged registry with no earlier copy starts empty and the next save leaves the damaged bytes alone", () => {
+  const { dir } = freshStore();
+  const file = path.join(dir, "servers.json");
+  fs.writeFileSync(file, '{"version":1,"servers":[{"id":"x"');
+  const store = new ServerStore(file, crypt, quiet);
+  assert.deepEqual(store.list(), []);
+  store.upsert({ origin: "https://b.example", name: "B", username: "x", token: "t", tokenExpiresAt: future });
+  assert.equal(new ServerStore(file, crypt, quiet).list().length, 1);
+  assert.equal(fs.readFileSync(path.join(dir, damagedCopies(dir)[0]), "utf8"), '{"version":1,"servers":[{"id":"x"');
+});
+
+test("a registry that cannot be read is never written over; this run keeps its changes in memory", () => {
+  const { store, dir } = freshStore();
+  const file = path.join(dir, "servers.json");
+  store.upsert({ origin: "https://a.example", name: "A", username: "kaleb", token: "tok", tokenExpiresAt: future });
+  const before = fs.readFileSync(file, "utf8");
+  const original = fs.readFileSync;
+  const patience = { ...registryPatience };
+  registryPatience.delayMs = 1;
+  fs.readFileSync = (...args) => {
+    if (args[0] === file) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+    return original(...args);
+  };
+  try {
+    const locked = new ServerStore(file, crypt, quiet);
+    assert.deepEqual(locked.list(), []);
+    locked.upsert({ origin: "https://b.example", name: "B", username: "x", token: "t", tokenExpiresAt: future });
+    assert.equal(locked.list().length, 1, "the change is kept for this run");
+  } finally {
+    fs.readFileSync = original;
+    Object.assign(registryPatience, patience);
+  }
+  assert.equal(fs.readFileSync(file, "utf8"), before, "the file is untouched");
+});
+
+test("a read Windows holds for a moment is tried again", () => {
+  const { store, dir } = freshStore();
+  const file = path.join(dir, "servers.json");
+  store.upsert({ origin: "https://a.example", name: "A", username: "kaleb", token: "tok", tokenExpiresAt: future });
+  const original = fs.readFileSync;
+  const patience = { ...registryPatience };
+  registryPatience.delayMs = 1;
+  let busy = 2;
+  fs.readFileSync = (...args) => {
+    if (args[0] === file && busy > 0) {
+      busy -= 1;
+      throw Object.assign(new Error("resource busy or locked"), { code: "EBUSY" });
+    }
+    return original(...args);
+  };
+  try {
+    assert.equal(new ServerStore(file, crypt, quiet).list().length, 1);
+  } finally {
+    fs.readFileSync = original;
+    Object.assign(registryPatience, patience);
+  }
+});
+
+test("a save leaves no temp file behind", () => {
+  const { store, dir } = freshStore();
+  for (let index = 0; index < 5; index += 1) store.touch("nothing");
+  store.upsert({ origin: "https://a.example", name: "A", username: "kaleb", token: "tok", tokenExpiresAt: future });
+  store.setPortal(false);
+  assert.deepEqual(fs.readdirSync(dir).filter((name) => name.endsWith(".tmp")), []);
 });
 
 test("the home cache is kept beside the servers and replaced whole", () => {
@@ -361,4 +447,13 @@ test("the registry is parsed once, re-read when the file changes, and never shar
   const listed = store.get(entry.id);
   listed.name = "changed by a caller";
   assert.equal(store.get(entry.id).name, "A");
+});
+
+test("the first-launch offer to add the app to Steam is answered once and stays answered", () => {
+  const { store, dir } = freshStore();
+  assert.equal(store.steamOfferAnswered(), false);
+  store.answerSteamOffer();
+  assert.equal(store.steamOfferAnswered(), true);
+  const again = new ServerStore(path.join(dir, "servers.json"), crypt);
+  assert.equal(again.steamOfferAnswered(), true, "a later start reads the answer back");
 });

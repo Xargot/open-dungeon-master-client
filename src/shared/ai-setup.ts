@@ -1,21 +1,21 @@
 // The OpenAI door of Story AI, shared by both shells. The key belongs to the
 // device: it is saved once in the device world's admin settings, where every
 // campaign on the device follows it (the server applies that on a device
-// world), so neither shell ever writes a key into a campaign.
-import type { AiSetup, SavedAi } from "./types";
+// world), so neither shell ever writes a key into a campaign. No model is
+// named here: each one is picked from what the key lists, as the server
+// itself names none (server PR 298).
+import type { AiModelsResult, AiSetup, SavedAi } from "./types";
 
 export const OPENAI_BASE_URL = "https://api.openai.com/v1";
-export const DEFAULT_MODEL = "gpt-5.1";
 
 export const NO_SAVED_AI: SavedAi = { keySaved: false, model: "", utilityModel: "" };
 
-// Processing speed (server issue 255): the models with a paid Fast tier, as
-// the server's src/lib/speed-tier.ts reads them, so the door offers Fast
-// only where a call can run at it. tests/ai-setup.test.mjs holds these to
-// the server's answers. The server decides again before every call.
+// Processing speed (server issue 255): Fast is offered for any model named
+// on OpenAI's API, as the server's src/lib/speed-tier.ts offers it. Which
+// models have the tier is not read from the name; OpenAI's reply says what
+// ran. tests/ai-setup.test.mjs holds this to the server's answer.
 export function openAiFastModel(model: string): boolean {
-  const name = model.trim().toLowerCase();
-  return !name.startsWith("ft:") && /^(gpt-6(\.\d+)?|gpt-5\.6)(-[a-z0-9.-]+)?$/.test(name);
+  return Boolean(model.trim());
 }
 
 // Whether an agent program runs this model at Fast: Claude Code and Codex
@@ -44,6 +44,69 @@ function isOpenAi(baseUrl: unknown): boolean {
 // What the device already holds, read from the masked admin settings (the
 // key itself never leaves the server, only whether one is set). A key for
 // some other backend does not count: it could not pay for OpenAI.
+
+const AGENT_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex", opencode: "opencode", grok: "Grok Build" };
+
+function hostOf(url: unknown): string {
+  try {
+    return typeof url === "string" ? new URL(url).host : "";
+  } catch {
+    return "";
+  }
+}
+
+// What the device world plays with now, in a player's words: who tells the
+// story, what paints, what reads it aloud ("narration" is only ever the
+// reading aloud, as in the server's own Help). Shown before any change is offered, so
+// Story AI starts from what is set rather than a blank question.
+export function currentAiSummary(body: unknown): SavedAi["summary"] | null {
+  const config = (body as {
+    config?: {
+      text?: Record<string, unknown>;
+      harness?: Record<string, unknown>;
+      images?: Record<string, unknown>;
+      speech?: Record<string, unknown>;
+    };
+  } | null)?.config;
+  if (!config?.text) return null;
+  const text = config.text;
+  const model = typeof text.customModel === "string" ? text.customModel : "";
+  const agent = typeof config.harness?.id === "string" ? AGENT_NAMES[config.harness.id] ?? config.harness.id : "";
+  const story =
+    text.provider === "none"
+      ? "A person runs every table; no AI tells the story."
+      : text.provider === "harness" && agent
+        ? `${agent} tells the story, on its own sign-in.`
+        : text.provider === "custom" && isOpenAi(text.customBaseUrl)
+          ? `OpenAI tells the story${model ? ` (${model})` : ""}, on your key.`
+          : text.provider === "custom"
+            ? /127\.0\.0\.1|localhost/.test(String(text.customBaseUrl ?? ""))
+              ? `A model on this computer tells the story${model ? ` (${model})` : ""}.`
+              : `${model || "A model"} at ${hostOf(text.customBaseUrl) || "another server"} tells the story.`
+            : text.provider === "local"
+              ? `Ollama on this computer tells the story${typeof text.localTextModel === "string" && text.localTextModel ? ` (${text.localTextModel})` : ""}.`
+              : "Not chosen yet.";
+  const backend = config.images?.defaultBackend;
+  const pictures =
+    backend === "comfyui"
+      ? "ComfyUI on this computer paints the pictures."
+      : backend === "openai"
+        ? "OpenAI paints the pictures, on your key."
+        : backend === "harness"
+          ? `${agent || "The agent"} paints the pictures.`
+          : "Painted placeholders until something can paint.";
+  const tts = config.speech?.ttsProvider;
+  const narration =
+    tts === "openai"
+      ? "OpenAI's voices read the story aloud."
+      : tts === "kokoro"
+        ? "Kokoro reads the story aloud."
+        : tts === "off"
+          ? "The story is read on screen."
+          : "Read aloud when a speech engine is found here.";
+  return { story, pictures, narration };
+}
+
 export function savedAiFrom(body: unknown): SavedAi {
   const config = (body as { config?: { text?: Record<string, unknown>; harness?: Record<string, unknown> } } | null)
     ?.config;
@@ -64,21 +127,26 @@ export function savedAiFrom(body: unknown): SavedAi {
     model: typeof text.customModel === "string" ? text.customModel : "",
     utilityModel: typeof text.utilityModel === "string" ? text.utilityModel : "",
     ...(text.speed === "fast" ? { fast: true } : {}),
+    ...(text.utilitySpeed === "fast" ? { utilityFast: true } : {}),
   };
 }
 
 // The admin settings patch for "AI via my OpenAI key". One key covers the
-// storyteller, the utility model and the pictures. A blank key keeps the one
-// the device already holds (the server reads an omitted key as "keep"), so
-// changing the model never means pasting the key again. Fast is asked for
-// both roles; the server sends it only for a model that has the tier.
+// storyteller, the utility model, the pictures and dictation. A blank key
+// keeps the one the device already holds (the server reads an omitted key
+// as "keep"), so changing the model never means pasting the key again. The
+// storyteller's model is the player's pick from the key's list; a blank
+// utility model follows it. Fast is asked for each role only where the
+// player chose it: the server sends it for any model on OpenAI's API, at the
+// premium price. The picture and transcription models come from the key's
+// own list once the key is saved (openAiMediaPatch).
 export function openAiPatch(setup: AiSetup, saved: SavedAi): { patch: object } | { error: string } {
   const apiKey = setup.apiKey.trim().slice(0, 400);
   if (!apiKey && !saved.keySaved) return { error: "Enter the API key." };
-  const model = setup.model.trim().slice(0, 200) || DEFAULT_MODEL;
+  const model = setup.model.trim().slice(0, 200);
+  if (!model) return { error: "Choose the Dungeon Master model from the ones your key lists." };
   const utilityModel = setup.utilityModel.trim().slice(0, 200) || model;
   const key = <K extends string>(field: K) => (apiKey ? { [field]: apiKey } : {});
-  const speed = setup.fast === true ? "fast" : "";
   return {
     patch: {
       text: {
@@ -90,12 +158,130 @@ export function openAiPatch(setup: AiSetup, saved: SavedAi): { patch: object } |
         utilityBaseUrl: OPENAI_BASE_URL,
         utilityModel,
         ...key("utilityApiKey"),
-        speed,
-        utilitySpeed: speed,
+        speed: setup.fast === true ? "fast" : "",
+        utilitySpeed: setup.utilityFast === true ? "fast" : "",
       },
       images: { defaultBackend: "openai", ...key("openaiApiKey") },
     },
   };
+}
+
+// The device world's admin routes the door asks, as each shell calls them:
+// a POST with a JSON body, answered with the parsed reply (a refusal
+// throws).
+export type AdminPost = (path: string, body: object) => Promise<unknown>;
+
+// The storyteller models a key lists, read by the device world's server as
+// its guided setup reads them: only models that can narrate, with the
+// catalog's pick as `recommended`. A blank key asks with the saved one, for
+// OpenAI only.
+export const STORY_MODELS_PATH = "/api/admin/setup";
+export function storyModelsRequest(apiKey: string): object {
+  return { action: "models", provider: "openai", apiKey: apiKey.trim().slice(0, 400) };
+}
+
+export function storyModelsFrom(body: unknown): AiModelsResult {
+  const reply = body as { ok?: unknown; error?: unknown; models?: unknown; recommended?: unknown } | null;
+  if (!reply || reply.ok !== true || !Array.isArray(reply.models)) {
+    return { ok: false, error: typeof reply?.error === "string" && reply.error ? reply.error : "Your key's models could not be listed." };
+  }
+  const models = reply.models
+    .map((entry) => entry as { id?: unknown; label?: unknown })
+    .filter((entry): entry is { id: string; label?: unknown } => typeof entry.id === "string" && entry.id.trim() !== "")
+    .map((entry) => ({ id: entry.id, label: typeof entry.label === "string" && entry.label ? entry.label : entry.id }));
+  const recommended = typeof reply.recommended === "string" && models.some((entry) => entry.id === reply.recommended) ? reply.recommended : "";
+  return { ok: true, models, recommended };
+}
+
+// The picture and transcription models a saved key runs, each from the
+// key's own list as the device world's server reads it (POST
+// /api/admin/models), whose `recommended` is the one obvious pick or none.
+// A model the device already saved is kept. With no obvious pick the field
+// stays blank and the role is reported, so the player is told where to pick.
+export const MEDIA_MODELS_PATH = "/api/admin/models";
+const MEDIA_LISTINGS = [
+  { role: "pictures" as const, request: { action: "list", role: "image", provider: "images" } },
+  { role: "dictation" as const, request: { action: "list", role: "dictation", provider: "speech", baseUrl: OPENAI_BASE_URL } },
+];
+
+// Narration on the same key, asked only when the player ticks it: the model
+// from the key's own list (as the server's guided setup lists it), saved as
+// the device world's speech. With no obvious pick nothing changes and the
+// notice says where to choose.
+const NARRATION_LISTING = { action: "list", role: "narration", provider: "speech", baseUrl: OPENAI_BASE_URL };
+
+export async function openAiNarrationPatch(post: AdminPost): Promise<object | null> {
+  const listing = (await post(MEDIA_MODELS_PATH, NARRATION_LISTING).catch(() => null)) as { recommended?: unknown } | null;
+  const model = typeof listing?.recommended === "string" ? listing.recommended.trim() : "";
+  return model ? { speech: { ttsProvider: "openai", ttsBaseUrl: "", ttsModel: model, ttsVoice: "" } } : null;
+}
+
+export type MediaModels = { pictures: string; dictation: string };
+
+// What the device already saved, from the masked admin settings.
+export function savedMediaModels(body: unknown): MediaModels {
+  const config = (body as { config?: { images?: { openaiModel?: unknown }; speech?: { sttOpenaiModel?: unknown } } } | null)?.config;
+  const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+  return { pictures: text(config?.images?.openaiModel), dictation: text(config?.speech?.sttOpenaiModel) };
+}
+
+export async function openAiMediaPatch(
+  saved: MediaModels,
+  post: AdminPost,
+): Promise<{ patch: object | null; unpicked: Array<keyof MediaModels> }> {
+  const picked: Partial<MediaModels> = {};
+  const unpicked: Array<keyof MediaModels> = [];
+  for (const { role, request } of MEDIA_LISTINGS) {
+    if (saved[role]) continue;
+    const listing = (await post(MEDIA_MODELS_PATH, request).catch(() => null)) as { recommended?: unknown } | null;
+    const recommended = typeof listing?.recommended === "string" ? listing.recommended.trim() : "";
+    if (recommended) picked[role] = recommended;
+    else unpicked.push(role);
+  }
+  const patch = {
+    ...(picked.pictures ? { images: { openaiModel: picked.pictures } } : {}),
+    ...(picked.dictation ? { speech: { sttOpenaiModel: picked.dictation } } : {}),
+  };
+  return { patch: Object.keys(patch).length ? patch : null, unpicked };
+}
+
+// Where the player picks what the key's list did not settle, in the world's
+// own admin page (the account menu's Admin).
+export function mediaNotice(unpicked: ReadonlyArray<keyof MediaModels>): string {
+  const pictures = unpicked.includes("pictures");
+  const dictation = unpicked.includes("dictation");
+  if (!pictures && !dictation) return "";
+  const what = pictures && dictation ? "picture or transcription model" : pictures ? "picture model" : "transcription model";
+  const where =
+    pictures && dictation
+      ? "pick them in Admin > Image generation and under OpenAI transcription in Admin > Speech"
+      : pictures
+        ? "pick one in Admin > Image generation"
+        : "pick one under OpenAI transcription in Admin > Speech";
+  const until = [pictures ? "campaigns show placeholder pictures" : "", dictation ? "dictation does not use OpenAI" : ""].filter(Boolean).join(" and ");
+  return `Your key is saved. It lists no single obvious ${what}, so ${where} (the account menu's Admin, inside your world). Until then ${until}.`;
+}
+
+// The door's whole save, the same in both shells: the key and the
+// storyteller, then the picture and transcription models from the key's own
+// list. `notice` says what is left to pick ("" when nothing is).
+export async function saveOpenAiDoor(
+  setup: AiSetup,
+  world: { settings(): Promise<unknown>; patch(patch: object): Promise<void>; post: AdminPost },
+): Promise<{ error: string } | { notice: string }> {
+  const settings = await world.settings().catch(() => null);
+  const built = openAiPatch(setup, savedAiFrom(settings));
+  if ("error" in built) return { error: built.error };
+  await world.patch(built.patch);
+  const media = await openAiMediaPatch(savedMediaModels(settings), world.post);
+  if (media.patch) await world.patch(media.patch);
+  let narrationNotice = "";
+  if (setup.narrate) {
+    const narration = await openAiNarrationPatch(world.post);
+    if (narration) await world.patch(narration);
+    else narrationNotice = " Your key lists no single obvious voice model, so pick one under Narration in Admin > Speech.";
+  }
+  return { notice: `${mediaNotice(media.unpicked)}${narrationNotice}`.trim() };
 }
 
 // The admin settings patch for "an agent I already have": the device's server

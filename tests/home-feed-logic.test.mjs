@@ -14,6 +14,7 @@ import {
   orderHosts,
   parseCampaigns,
   parseCanCreate,
+  parseOffersStory,
   resolveHost,
 } from "../dist/shared/home-feed-logic.js";
 
@@ -205,6 +206,25 @@ test("the campaign list says whether the account may start one; a server that do
   assert.equal(resolveHost(input, { kind: "failed", error: "down" }, entry, "2026-10-08T12:01:00.000Z").canCreate, false);
   assert.equal(hostFromCache(input, entry).canCreate, false);
   assert.equal(hostFromCache(input, { status: "online", campaigns: [], lastSeenAt: null }).canCreate, true);
+});
+
+test("the campaign list says whether the server has an AI storyteller; one that does not say has one", () => {
+  // Quick start is AI-run, so the home offers it only where a storyteller is.
+  assert.equal(parseOffersStory({ campaigns: [], offersStory: false }), false);
+  assert.equal(parseOffersStory({ campaigns: [], offersStory: true }), true);
+  assert.equal(parseOffersStory({ campaigns: [] }), true);
+  assert.equal(parseOffersStory(null), true);
+  const input = { id: "s1", kind: "server", name: "Shared", origin, username: "guest", token: "t" };
+  const human = resolveHost(
+    input,
+    { kind: "reply", status: 200, body: { campaigns: [], offersStory: false } },
+    null,
+    "2026-10-16T12:00:00.000Z",
+  );
+  assert.equal(human.offersStory, false);
+  const entry = cacheEntryFor(human);
+  assert.equal(resolveHost(input, { kind: "failed", error: "down" }, entry, "2026-10-16T12:01:00.000Z").offersStory, false);
+  assert.equal(hostFromCache(input, { status: "online", campaigns: [], lastSeenAt: null }).offersStory, true);
 });
 
 test("responses classify: 401/403 need login, failures are offline, 2xx is online", () => {

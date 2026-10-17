@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- What the FileProvider may hand to another app: the app's own folders
+     only. The share sheet and downloads write to the cache first
+     (mobile/src/bridge.ts, native-download.ts); the in-app browser's camera
+     capture uses the app's external Pictures folder and its temp files fall
+     back to the external cache. The template's external-path root mapped
+     the whole of shared storage, which nothing here needs. -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <external-path name="my_images" path="." />
+    <external-files-path name="my_images" path="." />
+    <external-cache-path name="my_external_cache" path="." />
     <cache-path name="my_cache_images" path="." />
 </paths>

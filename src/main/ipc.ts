@@ -26,7 +26,16 @@ import {
   trustedTunnelOrigin,
   type JoinLink,
 } from "../shared/deep-link";
-import { NO_SAVED_AI, harnessPatch, openAiPatch, savedAiFrom } from "../shared/ai-setup";
+import {
+  NO_SAVED_AI,
+  STORY_MODELS_PATH,
+  harnessPatch,
+  saveOpenAiDoor,
+  currentAiSummary,
+  savedAiFrom,
+  storyModelsFrom,
+  storyModelsRequest,
+} from "../shared/ai-setup";
 import {
   STEAM_KEYBOARD_CLOSE,
   parseDeckChoice,
@@ -40,7 +49,7 @@ import { coverRequestUrl, type HostInput } from "../shared/home-feed-logic";
 import { landingPath, safeInnerPath } from "../shared/open-path";
 import { createDesktopHomeFeed, fetchCoverImage } from "./home-feed";
 import type { LocalAiManager } from "./local-ai/manager";
-import { wireImageAi, wireTextAi } from "./local-ai/wiring";
+import { unwireImageAi, wireImageAi, wireTextAi } from "./local-ai/wiring";
 import type { LocalServer } from "./local-server";
 import {
   deleteAccount,
@@ -48,6 +57,7 @@ import {
   getAdminSettings,
   getHarnessStatus,
   patchAdminSettings,
+  postAdmin,
   probeServer,
   registerAccount,
   sessionState,
@@ -59,8 +69,9 @@ import {
 } from "./odm-api";
 import { commitWorldImport, discardWorldTransfer, exportFileName, runWorldJob } from "../shared/world-transfer";
 import { LOCAL_SERVER_ID, type ServerStore, type StoredServer } from "./servers";
+import { prepareRemoteConnection } from "./remote-preparation";
 import { dropTables, ownedTableCodes, publishTables, resolveTable } from "./table-registry";
-import { refusedAfter } from "../shared/broker";
+import { createPublicUrlSync } from "./public-url-sync";
 import { portalEligible } from "../shared/portal-logic";
 import { relocateWorld } from "../shared/relocate";
 import {
@@ -72,6 +83,8 @@ import {
 } from "./session-cookies";
 import { RESET_PHRASE, diagnosticSummary, redactHome } from "../shared/diagnostics";
 import { requestReset, type ResetOutcome } from "./reset";
+import { systemSteamHost } from "./steam-host";
+import { addToSteam, canAddToSteam, deckOffersSteam, steamPresent, steamShortcutState, type InstallPlace } from "./steam-shortcut";
 import type { QuickTunnel } from "./tunnel";
 import {
   parseStoryMemory,
@@ -309,36 +322,21 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     refusedCodes = next;
     if (changed && localPageShowing()) win.sendToGame("odm:share-status", shellShareStatus());
   };
-  const syncPublicUrl = async (): Promise<void> => {
-    const token = store.token(LOCAL_SERVER_ID);
-    if (!token || !local.origin) return;
-    const status = tunnel.status();
-    const live = status.state === "running" ? status.url : "";
-    // Without a tunnel, the Wi-Fi address while sharing on it: invite links
-    // and QR codes made inside the game then point where a friend at the
-    // table can reach. The table registry only learns public addresses.
-    await patchAdminSettings(local.origin, token, { publicUrl: live || local.lanOrigin }).catch(() => undefined);
-    if (live) {
-      const codes = await ownedTableCodes(local.origin, token);
-      const { published, refused } = await publishTables({
-        codes,
-        url: live,
-        secretFor: (code) => store.tableSecret(code),
-      });
-      setRefusedCodes(refusedAfter(refusedCodes, { codes, published, refused }));
-      // A code refused by the registry (claimed from another device) stays
-      // in the list so it is at least dropped with the rest later.
-      const before = store.publishedCodes();
-      store.setPublishedCodes([...new Set([...published, ...before])]);
-      return;
-    }
-    setRefusedCodes([]);
-    const stale = store.publishedCodes();
-    store.setPublishedCodes([]);
-    if (stale.length > 0) {
-      await dropTables({ codes: stale, secretFor: (code) => store.tableSecret(code) });
-    }
-  };
+  const syncPublicUrl = createPublicUrlSync({
+    token: () => store.token(LOCAL_SERVER_ID),
+    origin: () => local.origin,
+    lanOrigin: () => local.lanOrigin,
+    status: () => tunnel.status(),
+    patch: patchAdminSettings,
+    owned: ownedTableCodes,
+    publish: publishTables,
+    drop: dropTables,
+    publishedCodes: () => store.publishedCodes(),
+    setPublishedCodes: (codes) => store.setPublishedCodes(codes),
+    secretFor: (code) => store.tableSecret(code),
+    refusedCodes: () => refusedCodes,
+    setRefusedCodes,
+  });
   // Sharing is not a moment but a span: a campaign opened while shared gets
   // its code published too, and the registry's claim is refreshed, by
   // running the publish half again every so often for as long as the
@@ -457,79 +455,17 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   });
 
-  const connectRemote = async (
-    id: string,
-    joinCode: string,
-    path = "",
-  ): Promise<ConnectResult> => {
-    const saved = store.get(id);
-    if (!saved || saved.id === LOCAL_SERVER_ID) {
-      return { ok: false, needsLogin: false, error: "Unknown server." };
-    }
-    let entry = saved;
-    const notOnline = (): ConnectResult => ({
-      ok: false,
-      needsLogin: false,
-      error: `${entry.name} is not online right now. Ask the host to share their world, then try again.`,
-    });
-    // Who answers at the address on file, before anything secret is sent
-    // there. A tunnel hostname is handed out per session and can later
-    // belong to somebody else's world, and a world one of the apps hosts
-    // answers at a new address every time it is shared again. Only a world
-    // that proves it is the one this entry belongs to gets the session.
-    let probe = await probeServer(entry.origin).catch(() => null);
-    const strangerOnFile =
-      probe !== null && !!entry.instanceId && probe.instanceId !== entry.instanceId;
-    if (!probe || strangerOnFile) {
-      // Nothing there, or the wrong world: ask the registry where this
-      // world's room codes point today (src/shared/relocate.ts). Without
-      // this a player returning to a world that had been shared again was
-      // told to sign in, and on a device world the only door that screen
-      // offered was a new account: a second character and no way back.
-      const moved = await relocate(entry);
-      if (moved.origin === entry.origin) return notOnline();
-      entry = moved;
-      probe = await probeServer(entry.origin).catch(() => null);
-      if (!probe) return notOnline();
-    }
-    let token = store.token(id);
-    let session = token ? await sessionState(entry.origin, token) : "rejected";
-    if (session === "unreachable") return notOnline();
-    if (session === "rejected") {
-      // An account the app made up a password for (joined by room code)
-      // must never be asked for it: nobody was ever told what it is. Renew
-      // the session with the stored one instead, and only fall back to the
-      // sign-in form for accounts a person chose a password for.
-      const secret = store.secret(id);
-      token = null;
-      if (secret) {
-        try {
-          const grant = await loginForToken(entry.origin, entry.username, secret);
-          store.upsert({
-            id: entry.id,
-            origin: entry.origin,
-            name: entry.name,
-            username: grant.username,
-            token: grant.token,
-            tokenExpiresAt: grant.expiresAt,
-          });
-          token = grant.token;
-          session = "ok";
-        } catch {
-          // The password no longer works (changed, or the account is gone).
-        }
-      }
-    }
-    if (!token) {
-      return {
-        ok: false,
-        needsLogin: true,
-        error: probe.deviceWorld
-          ? "Your seat at this world could not be reopened. Join again with a name, and ask the host to remove the old one."
-          : "Your session expired. Sign in again.",
-      };
-    }
-    await attachRemote(entry, token, joinCode, path, probe);
+  const prepareRemote = (id: string) => prepareRemoteConnection(id, {
+    store,
+    probe: probeServer,
+    relocate,
+    sessionState,
+    login: loginForToken,
+  });
+  const connectRemote = async (id: string, joinCode: string, path = ""): Promise<ConnectResult> => {
+    const prepared = await prepareRemote(id);
+    if (!prepared.ok) return prepared;
+    await attachRemote(prepared.entry, prepared.token, joinCode, path, prepared.probe);
     return { ok: true };
   };
 
@@ -847,6 +783,22 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   });
 
+  shellIpc.handle("servers:prepare-native", async (_event, id: unknown, joinCode: unknown) => {
+    const serverId = str(id, 64);
+    const prepared = await prepareRemote(serverId);
+    if (!prepared.ok) {
+      return { ...prepared, origin: store.get(serverId)?.origin ?? "" };
+    }
+    store.touch(serverId);
+    const code = joinCodeOf(joinCode);
+    if (code) store.rememberJoinCode(serverId, code);
+    store.setInstanceId(serverId, prepared.probe.instanceId);
+    return {
+      ok: true,
+      session: { origin: prepared.entry.origin, token: prepared.token },
+      version: prepared.probe.version,
+    };
+  });
   shellIpc.handle("servers:connect", (_event, id: unknown, joinCode: unknown, path: unknown) =>
     connectRemote(str(id, 64), joinCodeOf(joinCode), safeInnerPath(path)),
   );
@@ -949,6 +901,9 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
         str(input?.password, 100),
       );
       adoptLocalGrant(grant);
+      // In the background: the sign-in has succeeded whatever the broker
+      // says, and a slow DELETE must not hold it (or fail it).
+      void syncPublicUrl();
       return { ok: true, status: localStatus() };
     } catch (err) {
       return fail(err);
@@ -975,20 +930,37 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
         return { ok: true };
       }
       if (setup?.choice !== "openai") return { ok: true };
-      const saved = savedAiFrom(await getAdminSettings(local.origin, token).catch(() => null));
-      const built = openAiPatch(
+      const origin = local.origin;
+      const saved = await saveOpenAiDoor(
         {
           choice: "openai",
           apiKey: str(setup.apiKey, 400),
           model: str(setup.model, 200),
           utilityModel: str(setup.utilityModel, 200),
           fast: setup.fast === true,
+          utilityFast: setup.utilityFast === true,
+          narrate: setup.narrate === true,
         },
-        saved,
+        {
+          settings: () => getAdminSettings(origin, token),
+          patch: (patch) => patchAdminSettings(origin, token, patch),
+          post: (pathname, body) => postAdmin(origin, token, pathname, body),
+        },
       );
-      if ("error" in built) return fail(new Error(built.error));
-      await patchAdminSettings(local.origin, token, built.patch);
-      return { ok: true };
+      if ("error" in saved) return fail(new Error(saved.error));
+      return { ok: true, ...(saved.notice ? { notice: saved.notice } : {}) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  // The storyteller models the OpenAI key lists, for the door's model
+  // fields: the typed key, or the device's saved one when none is typed.
+  shellIpc.handle("local:ai-models", async (_event, apiKey: unknown) => {
+    try {
+      const token = store.token(LOCAL_SERVER_ID);
+      if (!token || !local.origin) return fail(new Error("Set up the local account first."));
+      return storyModelsFrom(await postAdmin(local.origin, token, STORY_MODELS_PATH, storyModelsRequest(str(apiKey, 400))));
     } catch (err) {
       return fail(err);
     }
@@ -1017,6 +989,27 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
           fast: body.config?.speed === "fast",
         },
       };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  // The agent that narrates paints too (Story AI, after an agent is chosen):
+  // one test map painted the way a table asks for one, and only when it
+  // comes back the server makes the agent the device world's painter and
+  // moves campaigns stranded on a backend that cannot paint onto it. The
+  // server refuses the second step without the first.
+  shellIpc.handle("local:harness-pictures", async () => {
+    try {
+      const token = store.token(LOCAL_SERVER_ID);
+      if (!token || !local.origin) return fail(new Error("Set up the local account first."));
+      const picture = (await postAdmin(local.origin, token, "/api/admin/harness", { action: "picture" }, 300_000)) as {
+        image?: string;
+        error?: string;
+      };
+      if (!picture?.image) return fail(new Error(picture?.error || "No picture came back."));
+      const adopted = (await postAdmin(local.origin, token, "/api/admin/harness", { action: "adopt" })) as { moved?: unknown[] };
+      return { ok: true, image: picture.image, moved: Array.isArray(adopted?.moved) ? adopted.moved.length : 0 };
     } catch (err) {
       return fail(err);
     }
@@ -1160,7 +1153,9 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
   shellIpc.handle("local:ai-saved", async () => {
     const token = store.token(LOCAL_SERVER_ID);
     if (!token || !local.origin) return NO_SAVED_AI;
-    return savedAiFrom(await getAdminSettings(local.origin, token).catch(() => null));
+    const settings = await getAdminSettings(local.origin, token).catch(() => null);
+    const summary = currentAiSummary(settings);
+    return summary ? { ...savedAiFrom(settings), summary } : savedAiFrom(settings);
   });
 
   shellIpc.handle("local:play", async (_event, joinCode: unknown, path: unknown): Promise<ConnectResult> => {
@@ -1176,8 +1171,8 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     void syncPublicUrl();
     // Whatever local AI is installed warms up in the background. The first
     // AI turn or image simply waits for the load if the player beats it.
-    void localAi.start();
-    void localAi.startComfy();
+    void localAi.start().catch(() => win.sendEvent({ kind: "local-ai-progress", status: localAi.status() }));
+    void localAi.startComfy().catch(() => win.sendEvent({ kind: "local-ai-progress", status: localAi.status() }));
     let token = store.token(LOCAL_SERVER_ID);
     if (token && !(await tokenIsValid(local.origin, token))) token = null;
     if (!token) {
@@ -1212,6 +1207,14 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     if (!entry) {
       return { ok: false, needsLogin: true, error: "Sign in to your local account." };
     }
+    // An image stack removed while the world slept left it wired to a
+    // ComfyUI that is gone; unwired here, in the background.
+    if (!localAi.status().comfy.installed) void unwireImageAi(local.origin, token, localAi.comfy.origin());
+    // The first sync can clean broker records without a token. Run again
+    // after renewing the login so the world's saved publicUrl is healed; in
+    // the background, since a broker that is slow to answer must not hold
+    // the world closed (the syncs run one after another either way).
+    void syncPublicUrl();
     await applySessionCookie(
       partitionFor(LOCAL_SERVER_ID),
       local.origin,
@@ -1237,7 +1240,43 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     update: updater.lastFound(),
     deck,
     reset: ctx.reset ? { aside: redactHome(ctx.reset.aside, os.homedir()), left: ctx.reset.left } : null,
+    addToSteam: canAddToSteam(updater.kind, process.platform) && steamPresent(os.homedir()),
   }));
+  // Add to Steam (src/main/steam-shortcut.ts): a Linux install into the
+  // library of the account last signed in to Steam, with its artwork.
+  const steamPlace = (): InstallPlace => ({
+    kind: updater.kind,
+    execPath: process.execPath,
+    appImagePath: process.env.APPIMAGE ?? "",
+    flatpakId: process.env.FLATPAK_ID ?? "",
+  });
+  shellIpc.handle("steam:add", async (_event, restart: unknown) => {
+    if (!canAddToSteam(updater.kind, process.platform)) {
+      return { ok: false, error: "Only the Linux app can add itself to Steam." };
+    }
+    const result = await addToSteam(
+      {
+        place: steamPlace(),
+        home: os.homedir(),
+        artDir: app.isPackaged ? path.join(process.resourcesPath, "steam") : path.join(app.getAppPath(), "build", "steam"),
+        launchedBySteam: Boolean(deck?.steam),
+        restart: restart === true,
+      },
+      systemSteamHost(Boolean(process.env.FLATPAK_ID)),
+    );
+    // A renamed AppImage is where the updater replaces the app from now on
+    // (index.ts reads the path when an update installs).
+    if (result.ok && result.state !== "needs-restart" && result.moved) process.env.APPIMAGE = result.moved;
+    return result;
+  });
+  // The same, offered once at first launch on a Deck in Desktop Mode, while
+  // the app is not in the library already (src/renderer/steam.ts).
+  shellIpc.handle("steam:offer", async () => {
+    if (!deck || !deckOffersSteam(deck) || !canAddToSteam(updater.kind, process.platform)) return false;
+    if (store.steamOfferAnswered()) return false;
+    return (await steamShortcutState(steamPlace(), os.homedir())) === "missing";
+  });
+  shellIpc.handle("steam:offer-answered", () => store.answerSteamOffer());
   shellIpc.handle("deck:set-choice", (_event, raw: unknown) => {
     if (!deck) return undefined;
     const choice = parseDeckChoice(raw);
@@ -1389,7 +1428,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
       if (token && local.origin && alias) {
         warning = await wireTextAi(local.origin, token, alias, utility);
       }
-      void localAi.start();
+      void localAi.start().catch(() => win.sendEvent({ kind: "local-ai-progress", status: localAi.status() }));
       return { ok: true, status: localAi.status(), warning };
     } catch (err) {
       return fail(err);
@@ -1409,7 +1448,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
           localAi.comfy.checkpointFile(),
         );
       }
-      void localAi.startComfy();
+      void localAi.startComfy().catch(() => win.sendEvent({ kind: "local-ai-progress", status: localAi.status() }));
       return { ok: true, status: localAi.status(), warning };
     } catch (err) {
       return fail(err);
@@ -1418,9 +1457,17 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
 
   shellIpc.handle("local-ai:uninstall", async (_event, component: unknown) => {
     try {
-      if (str(component, 10) === "images") await localAi.uninstallComfy();
-      else await localAi.uninstallText();
-      return { ok: true, status: localAi.status() };
+      let warning = "";
+      if (str(component, 10) === "images") {
+        await localAi.uninstallComfy();
+        // A running world stops painting with it now; a sleeping one is
+        // put right at its next start (local:play).
+        const token = store.token(LOCAL_SERVER_ID);
+        if (token && local.origin) warning = await unwireImageAi(local.origin, token, localAi.comfy.origin());
+      } else {
+        await localAi.uninstallText();
+      }
+      return { ok: true, status: localAi.status(), warning };
     } catch (err) {
       return fail(err);
     }

@@ -4,6 +4,7 @@ import {
   createSecretStore,
   loadServerSecrets,
   migrateSecret,
+  readServerList,
   serverSecretKey,
   serverTokenKey,
   storeServerSecrets,
@@ -75,4 +76,39 @@ test("a plain value is moved into the store once", async () => {
   assert.equal(plain.data.size, 0);
   assert.equal(await migrateSecret("odm-table-secret:ABCD", store, plain), "s3cret");
   assert.equal(await migrateSecret("odm-table-secret:NONE", store, plain), null);
+});
+
+test("a damaged saved-server list is kept under a dated key, not written over", async () => {
+  const plain = memory({ "odm-servers": '[{"id":"a","origin":"https://a.exa' });
+  const at = () => new Date("2026-10-13T12:00:00.000Z");
+  assert.deepEqual(await readServerList(plain, "odm-servers", at), []);
+  assert.equal(plain.data.get("odm-servers.damaged-2026-10-13T12:00:00.000Z"), '[{"id":"a","origin":"https://a.exa');
+  assert.equal(plain.data.get("odm-servers"), "[]");
+  // Read again: nothing more is set aside.
+  assert.deepEqual(await readServerList(plain, "odm-servers", at), []);
+  assert.equal([...plain.data.keys()].filter((key) => key.includes("damaged")).length, 1);
+});
+
+test("a saved-server list that is JSON but not a list is kept aside too; a missing one is a first run", async () => {
+  const plain = memory({ "odm-servers": '{"servers":[]}' });
+  assert.deepEqual(await readServerList(plain, "odm-servers"), []);
+  assert.equal([...plain.data.keys()].filter((key) => key.startsWith("odm-servers.damaged-")).length, 1);
+  const fresh = memory();
+  assert.deepEqual(await readServerList(fresh, "odm-servers"), []);
+  assert.equal(fresh.data.size, 0);
+  const listed = memory({ "odm-servers": '[{"id":"a"}]' });
+  assert.deepEqual(await readServerList(listed, "odm-servers"), [{ id: "a" }]);
+});
+
+test("a preferences read that fails is an error, not an empty list", async () => {
+  const broken: SecretBackend = {
+    async get() {
+      throw new Error("preferences unavailable");
+    },
+    async set() {
+      throw new Error("must not write");
+    },
+    async remove() {},
+  };
+  await assert.rejects(readServerList(broken, "odm-servers"), /preferences unavailable/);
 });

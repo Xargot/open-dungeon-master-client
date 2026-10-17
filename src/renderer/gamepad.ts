@@ -3,6 +3,7 @@
 // API reports. The D-pad walks a highlight between controls by where they
 // sit on screen, A presses, B backs out, the shoulders talk, and Steam's
 // keyboard comes up for text boxes. Nothing here runs until a pad speaks.
+import { NO_TALK_NOTICE } from "../shared/deck.js";
 import { PadReader, type PadAction, type PadSnapshot } from "../shared/pad-input.js";
 import { ownArrowKey, pickFirst, pickNext, type Box, type Direction } from "../shared/spatial-nav.js";
 
@@ -14,6 +15,8 @@ export interface PadHooks {
   settings(): void;
   // Steam's keyboard over a text box, or put away (field null).
   keyboard(field: HTMLElement | null): void;
+  // A short line for the player, shown the way the shell shows its notices.
+  notice(text: string): void;
 }
 
 // Everything a pad can land on. Roving-focus widgets (Radix menus, tabs)
@@ -261,11 +264,19 @@ export function startGamepad(hooks: PadHooks): void {
     window.dispatchEvent(new KeyboardEvent(down ? "keydown" : "keyup", { code: PTT_CODE, key: "`", bubbles: true }));
   };
 
-  // R1: the composer's hold-to-talk button, pressed and released.
+  // R1: the composer's hold-to-talk button, pressed and released. At a
+  // table whose message box has no such button at all, the world has no
+  // speech to text (the server hides the mic then), and R1 says so instead
+  // of doing nothing. A button that is only disabled for now, or a screen
+  // with no message box, stays quiet as before.
   const talk = (down: boolean): void => {
     if (down) {
-      const button = [...document.querySelectorAll(TALK_BUTTON)].find(usable);
-      if (!button) return;
+      const buttons = [...document.querySelectorAll(TALK_BUTTON)];
+      const button = buttons.find(usable);
+      if (!button) {
+        if (buttons.length === 0 && [...document.querySelectorAll(COMPOSER)].some(visible)) hooks.notice(NO_TALK_NOTICE);
+        return;
+      }
       talkTarget = button;
       button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse", isPrimary: true }));
       return;

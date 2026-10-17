@@ -53,6 +53,8 @@ export interface HomeCacheEntry {
   lastSeenAt: string | null;
   // Absent in caches written before the policy existed: open.
   canCreate?: boolean;
+  // Absent in caches written before the server said: offered.
+  offersStory?: boolean;
 }
 
 export type HomeCache = Record<string, HomeCacheEntry>;
@@ -273,6 +275,9 @@ export interface Classification {
   // Whether the account may start a campaign there; only meaningful with a
   // fresh list. A server that does not say (before 0.25) is open.
   canCreate: boolean;
+  // Whether it has an AI storyteller (Quick start is AI-run); a server that
+  // does not say (before 0.27.3) is taken to have one.
+  offersStory: boolean;
   error: string;
 }
 
@@ -281,16 +286,21 @@ export function parseCanCreate(body: unknown): boolean {
   return value !== false;
 }
 
+export function parseOffersStory(body: unknown): boolean {
+  const value = (body as { offersStory?: unknown } | null)?.offersStory;
+  return value !== false;
+}
+
 export function classifyOutcome(outcome: FetchOutcome, origin: string): Classification {
   if (outcome.kind === "skipped") {
-    return { status: outcome.status, campaigns: null, canCreate: true, error: outcome.error };
+    return { status: outcome.status, campaigns: null, canCreate: true, offersStory: true, error: outcome.error };
   }
-  if (outcome.kind === "failed") return { status: "offline", campaigns: null, canCreate: true, error: outcome.error };
+  if (outcome.kind === "failed") return { status: "offline", campaigns: null, canCreate: true, offersStory: true, error: outcome.error };
   if (outcome.status === 401 || outcome.status === 403) {
-    return { status: "needsLogin", campaigns: null, canCreate: true, error: "" };
+    return { status: "needsLogin", campaigns: null, canCreate: true, offersStory: true, error: "" };
   }
   if (outcome.status < 200 || outcome.status >= 300) {
-    return { status: "offline", campaigns: null, canCreate: true, error: `${origin} answered ${outcome.status}.` };
+    return { status: "offline", campaigns: null, canCreate: true, offersStory: true, error: `${origin} answered ${outcome.status}.` };
   }
   const campaigns = parseCampaigns(outcome.body, origin);
   if (!campaigns) {
@@ -298,10 +308,17 @@ export function classifyOutcome(outcome: FetchOutcome, origin: string): Classifi
       status: "offline",
       campaigns: null,
       canCreate: true,
+      offersStory: true,
       error: `${origin} did not answer with a campaign list.`,
     };
   }
-  return { status: "online", campaigns, canCreate: parseCanCreate(outcome.body), error: "" };
+  return {
+    status: "online",
+    campaigns,
+    canCreate: parseCanCreate(outcome.body),
+    offersStory: parseOffersStory(outcome.body),
+    error: "",
+  };
 }
 
 // Fresh data wins; otherwise the cached list is shown and marked stale.
@@ -327,6 +344,7 @@ export function resolveHost(
     error: result.error,
     campaigns: result.campaigns ?? cached?.campaigns ?? [],
     canCreate: fresh ? result.canCreate : (cached?.canCreate ?? true),
+    offersStory: fresh ? result.offersStory : (cached?.offersStory ?? true),
   };
 }
 
@@ -350,11 +368,18 @@ export function hostFromCache(
     error: "",
     campaigns: cached?.campaigns ?? [],
     canCreate: cached?.canCreate ?? true,
+    offersStory: cached?.offersStory ?? true,
   };
 }
 
 export function cacheEntryFor(host: HomeHost): HomeCacheEntry {
-  return { status: host.status, campaigns: host.campaigns, lastSeenAt: host.lastSeenAt, canCreate: host.canCreate };
+  return {
+    status: host.status,
+    campaigns: host.campaigns,
+    lastSeenAt: host.lastSeenAt,
+    canCreate: host.canCreate,
+    offersStory: host.offersStory,
+  };
 }
 
 // The device world leads; everything else follows in the order the player

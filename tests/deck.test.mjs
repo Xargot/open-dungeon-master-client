@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  NO_TALK_NOTICE,
   PAD_LEGEND,
   STEAM_KEYBOARD_CLOSE,
   deckFlag,
@@ -99,6 +100,16 @@ test("Steam's keyboard link carries a clean rect and the line mode", () => {
   );
   assert.equal(steamKeyboardUrl(null, false), "steam://open/keyboard?XPosition=0&YPosition=0&Width=0&Height=0&Mode=0");
   assert.equal(STEAM_KEYBOARD_CLOSE, "steam://close/keyboard");
+});
+
+// Each shoulder works only once something is set up, and says what: L1 once
+// Audio and dice has the mic on Push to talk, R1 once the world has speech to
+// text (the server hides its mic without it, and R1 then shows NO_TALK_NOTICE).
+test("the shoulders' lines say what each needs before it talks", () => {
+  const line = (control) => PAD_LEGEND.find((entry) => entry.control.startsWith(control)).does;
+  assert.match(line("L1"), /, once Audio and dice has the mic on Push to talk$/);
+  assert.match(line("R1"), /^Talk to the Dungeon Master, once the world has speech to text: /);
+  assert.match(NO_TALK_NOTICE, /^This world has no speech to text yet\./);
 });
 
 test("the legend names every control the navigator answers to", () => {

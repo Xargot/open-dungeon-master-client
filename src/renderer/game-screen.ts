@@ -118,6 +118,19 @@ export function gameBack(): boolean {
   return mount ? mount.router.back() : false;
 }
 
+// Escape to whatever a world's page has open, before the back gesture goes
+// back a page: Radix closes its dialogs and menus on it, and the host's
+// guided tours end on it and record that they were ended (server issue
+// #306; a tour the page merely navigated away from opens again next visit).
+// A controller's B does the same in gamepad.ts. True when something took it.
+export function escapeInGame(): boolean {
+  if (!mount) return false;
+  const target = document.activeElement instanceof HTMLElement ? document.activeElement : document.body;
+  const escape = new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true });
+  target.dispatchEvent(escape);
+  return escape.defaultPrevented;
+}
+
 // The game root's distance from the top of the window, for the CSS that
 // sizes the table's full-height layout (home.css --game-top). Measured
 // again when the window changes, since the safe area can move.
@@ -207,12 +220,17 @@ function shellHostApi(hostId: string, origin: string, current: () => GameMount |
 // Draws the host natively at path. Returns false when the host is too old
 // for it or the shell has no live session there; the caller then opens the
 // web view the way it always did.
-export async function tryOpenNative(hostId: string, path: string, serverVersion: string): Promise<boolean> {
+export async function tryOpenNative(
+  hostId: string,
+  path: string,
+  serverVersion: string,
+  validatedSession?: { origin: string; token: string },
+): Promise<boolean> {
   if (!nativeEligible(serverVersion).ok) return false;
   // The bundle and the session do not depend on each other; the bundle's
   // failure is swallowed only once the session says the door is open.
   const loading = loadBundle().catch(() => null);
-  const session = await window.odm.hostSession(hostId);
+  const session = validatedSession ?? await window.odm.hostSession(hostId);
   if (!session) return false;
   const game = await loading;
   if (!game) return false;

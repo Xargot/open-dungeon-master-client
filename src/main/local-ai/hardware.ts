@@ -160,6 +160,18 @@ async function windowsVramGb(): Promise<{
   return { vramGb, gttGb: 0, gpuName: picked.gpuName, vendor };
 }
 
+// The highest compute capability nvidia-smi reports, 0 when it gives none.
+// Asked on its own so a driver that predates the field still reports the
+// memory and name above.
+async function nvidiaComputeCap(): Promise<number> {
+  try {
+    const { stdout } = await run("nvidia-smi", ["--query-gpu=compute_cap", "--format=csv,noheader"]);
+    return Math.max(0, ...stdout.split("\n").map(Number).filter(Number.isFinite));
+  } catch {
+    return 0;
+  }
+}
+
 export async function scanHardware(): Promise<HardwareInfo> {
   const ramGb = os.totalmem() / 1024 ** 3;
   const base: HardwareInfo = {
@@ -191,11 +203,13 @@ export async function scanHardware(): Promise<HardwareInfo> {
   const unified =
     (probe.vramGb > 0 && probe.vramGb >= ramGb * 0.6) ||
     (probe.gttGb >= ramGb * 0.4 && probe.vramGb < ramGb * 0.3);
+  const compute = probe.vendor === "nvidia" ? await nvidiaComputeCap() : 0;
   return {
     ...base,
     vramGb: Math.round(unified ? ramGb : probe.vramGb),
     gpuName: probe.gpuName,
     gpuVendor: probe.vendor,
+    ...(compute > 0 ? { gpuCompute: compute } : {}),
     unifiedMemory: unified,
   };
 }

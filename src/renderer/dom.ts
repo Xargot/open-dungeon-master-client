@@ -134,7 +134,7 @@ export function bookMark(big = false): HTMLImageElement {
 export function tile(big = false): HTMLElement {
   const wrap = el("span", big ? "tile big twinkle" : "tile");
   const img = el("img");
-  img.src = "./story.png";
+  img.src = "./story.webp";
   img.alt = "";
   wrap.append(img);
   return wrap;

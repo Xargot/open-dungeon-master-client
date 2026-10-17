@@ -53,59 +53,65 @@ More help, and the full player guide, live at
 
 | Platform | File | Notes |
 | --- | --- | --- |
-| **Windows** (x64) | `Open-Dungeon-Master-Setup-<version>.exe` | Installer; updates itself. |
+| **Windows** (x64) | `Open-Dungeon-Master-Setup-<version>.exe` | Installer; updates itself. Not code signed: when SmartScreen says "Windows protected your PC", choose More info, then Run anyway. |
 | **macOS** (Apple Silicon) | `open-dungeon-master-client-<version>-arm64-mac.dmg` | Not notarized yet: the first time macOS blocks it, open System Settings > Privacy & Security and choose Open Anyway (on macOS 14 and earlier, right-click the app and choose Open). |
 | **macOS** (Intel) | `open-dungeon-master-client-<version>-x64-mac.dmg` | Same as above. |
 | **Linux** (x64) | `.AppImage`, `.deb`, `.rpm`, `.tar.gz`, `.flatpak` | The AppImage carries a static runtime, so it runs on distros that no longer ship libfuse2. |
 | **Android** 8.0+ (arm64) | `open-dungeon-master-client-<version>.apk` | Sideload it: allow installs from your browser or file manager when Android asks. |
+
+**Checking a download.** The release page lists a SHA-256 checksum beside every
+file; compare it with `sha256sum <file>` (or `Get-FileHash <file>` in PowerShell).
+Releases after 0.17.6 also carry a build attestation, which proves a file came out
+of this repository's release workflow:
+`gh attestation verify <file> --repo Lebbitheplow/open-dungeon-master-client`.
 
 ## What's in the box
 
 <table>
 <tr>
 <td width="50%" valign="top" align="center">
-<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/local-data.png" width="56"><br>
+<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/local-data.webp" width="56"><br>
 <b>A world on your device</b><br>
 <sub>The app runs its own Open Dungeon Master server: enter your world from the title screen and it wakes up, close the app and it sleeps. Campaigns, characters and pictures stay on your computer or phone. No account anywhere else.</sub>
 </td>
 <td width="50%" valign="top" align="center">
-<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/chats.png" width="56"><br>
+<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/chats.webp" width="56"><br>
 <b>Share it with one code</b><br>
 <sub>Open a campaign lobby and the app opens a public address for your world through a Cloudflare tunnel, with no port forwarding and no router setup. Friends join with the room code, an invite link, or a QR code. For a table in the same room, share on this Wi-Fi instead and play with no internet at all.</sub>
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top" align="center">
-<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/support.png" width="56"><br>
+<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/support.webp" width="56"><br>
 <b>Any server, one app</b><br>
 <sub>Add servers by address and the app remembers each session. A room code finds its table wherever the host is sharing from, even though the host's address changes every time, and <code>odm://</code> invite links open straight into the app.</sub>
 </td>
 <td width="50%" valign="top" align="center">
-<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/story.png" width="56"><br>
+<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/story.webp" width="56"><br>
 <b>Native game screens</b><br>
 <sub>The app ships the game's own screens and draws them itself; only game data travels to the host. The controls match everywhere, and a shared world costs far less traffic. Much older hosts open their own pages instead.</sub>
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top" align="center">
-<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/text-model.png" width="56"><br>
+<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/text-model.webp" width="56"><br>
 <b>Story AI, your choice</b><br>
 <sub>Decide who narrates your world: a human at the table, an AI Dungeon Master on your own OpenAI API key, or, on desktop, a local model the app sizes to your hardware, downloads and runs for you, or a CLI agent you already pay for (Claude Code, Codex, opencode, Grok Build) narrating on its own subscription.</sub>
 </td>
 <td width="50%" valign="top" align="center">
-<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/images.png" width="56"><br>
+<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/images.webp" width="56"><br>
 <b>Local scene art</b><br>
 <sub>On desktop the app can also install a local ComfyUI with one curated SDXL checkpoint for portraits, scene art and battle maps. Text and image stacks install and uninstall separately.</sub>
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top" align="center">
-<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/chats.png" width="56"><br>
+<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/chats.webp" width="56"><br>
 <b>Dice, voice and devices</b><br>
 <sub>Pixels Bluetooth dice pair on desktop and Android alike, the 3D dice tray rolls in the app, and App settings holds the microphone, playback device and every volume, reachable over any running table.</sub>
 </td>
 <td width="50%" valign="top" align="center">
-<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/characters.png" width="56"><br>
+<img src="https://raw.githubusercontent.com/Lebbitheplow/open-dungeon-master/main/public/sidebar-icons/characters.webp" width="56"><br>
 <b>A title screen for home</b><br>
 <sub>The table you were last at fills the screen with its latest scene and a "when last we left" recap, your other tables sit as save slots grouped by host, and a guided tour shows where everything lives.</sub>
 </td>
@@ -188,12 +194,22 @@ Where it can, it installs the update itself and relaunches:
 - **Windows installer, AppImage, `.tar.gz`, macOS:** replaced in place.
 - **`.deb` / `.rpm`:** installed through your package manager, which asks for your
   password.
-- **Flatpak:** the new bundle is downloaded and opened for your software center.
+- **Flatpak:** the new bundle installs through the system's flatpak (which may ask
+  for your password), or opens in your software center when the app cannot reach
+  it. A release that went out without a Flatpak bundle is not offered to Flatpak
+  installs until one is there.
 - **Store installs** (snap, or pacman through the AUR template in
   [packaging/aur](packaging/aur)) only announce the new version and leave the
   upgrade to that store.
 
 On Android, install the new APK over the old one; your world and its data are kept.
+Android only installs an app over one signed by the same key, and the APK from this
+page and the Google Play build may not be. If Android refuses to install one over
+the other, take your world out first with **Move your world** in Settings, since
+uninstalling the app deletes it, then bring it into the new install the same way.
+
+An older version may refuse to open a world a newer one has changed the shape of. It
+says so and leaves the world as it is; update again to open it.
 
 ## Troubleshooting
 
@@ -209,7 +225,19 @@ an update or a reinstall never touches it:
 Inside it, `data/` holds the world's database and its key, and `local-server/`
 the server files the app unpacked from its own copy, with your uploads,
 paintings, narration and installed world packs beside them. An update replaces
-the server files and carries those folders across.
+the server files and carries those folders across. Uninstalling the desktop app
+leaves the folder where it is.
+
+- **Switching Linux packages:** the AppImage, `.deb`, `.rpm` and `.tar.gz` share
+  that one folder, so moving between them keeps your world. The Flatpak keeps its
+  own, so carry the world across with **Move your world** in Settings. On a Steam
+  Deck, Game Mode and Desktop Mode run the same Flatpak and see the same world.
+- **On Android** the world's database sits in the app's private storage, which
+  Android encrypts along with the phone, but it has no key of its own the way the
+  desktop's does: the phone's built-in SQLite has no cipher. Your sign-ins are
+  sealed with the Android Keystore. Phone backups and transfers to a new phone
+  leave the world out, so the new phone gets your server list and asks you to
+  sign in again; bring the world over with **Move your world**.
 
 Settings has a **Troubleshooting** card for the rest, and nothing on it
 deletes anything you made:
@@ -274,8 +302,10 @@ npm run smoke-relocate          # the server tree survives a move of the data fo
 node scripts/smoke-tunnel.mjs   # a real share through the broker and cloudflared
 ```
 
-There is no pull request CI beyond a security scan, so run these before opening a
-pull request.
+Every pull request runs [.github/workflows/ci.yml](.github/workflows/ci.yml): lint,
+the desktop build and tests, the mobile type check and tests, the main process's
+file-handling tests on Windows, and the Android unit tests. The smoke runs above are
+not part of it, so run them before opening a pull request.
 
 ### Desktop packages
 
@@ -301,6 +331,7 @@ npm ci
 mkdir -p runtime
 gh release download node-android-v24.20.0 --pattern '*.tar.gz' --dir runtime
 gh release download cloudflared-android-2026.8.3 --pattern '*.tar.gz' --dir runtime
+(cd runtime && sha256sum -c ../runtime.sha256)   # the digests the release build checks
 tar -C runtime -xzf runtime/node-android-v24.20.0.tar.gz
 tar -C runtime -xzf runtime/cloudflared-android-2026.8.3.tar.gz
 

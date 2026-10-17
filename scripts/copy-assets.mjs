@@ -15,7 +15,7 @@ for (const name of [
   "style.css",
   "controls.css",
   "home.css",
-  "story.png",
+  "story.webp",
 ]) {
   fs.copyFileSync(path.join(repo, "src", "renderer", name), path.join(outDir, name));
 }

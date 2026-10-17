@@ -9,11 +9,11 @@ const TIMEOUT_MS = 10_000;
 
 export class ApiError extends Error {}
 
-async function api(origin: string, pathname: string, init?: RequestInit): Promise<Response> {
+async function api(origin: string, pathname: string, init?: RequestInit, timeoutMs = TIMEOUT_MS): Promise<Response> {
   try {
     return await fetch(`${origin}${pathname}`, {
       ...init,
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     throw new ApiError(`Could not reach ${origin}. Check the address and your connection.`);
@@ -194,6 +194,24 @@ export async function speechEngine(origin: string, token: string, install: boole
   });
   if (res.status === 404) throw new ApiError("This world's server is too old for built-in speech; update the app.");
   if (!res.ok) throw await errorFrom(res, "Reading the speech engine failed.");
+  return res.json();
+}
+
+// One of the world's admin routes that takes a JSON body and answers with
+// one (the model listings the OpenAI door asks, src/shared/ai-setup.ts).
+// The server asks the key's provider in turn, so it is given longer.
+export async function postAdmin(origin: string, token: string, pathname: string, body: object, timeoutMs = 30_000): Promise<unknown> {
+  const res = await api(
+    origin,
+    pathname,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    },
+    timeoutMs,
+  );
+  if (!res.ok) throw await errorFrom(res, "The world's server refused the request.");
   return res.json();
 }
 

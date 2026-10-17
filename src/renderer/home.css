@@ -205,8 +205,10 @@
 }
 .tt-corner-tl { --tt-from: inset(0 100% 100% 0); left: 22px; top: calc(22px + var(--safe-top)); border-left-width: 1px; border-top-width: 1px; }
 .tt-corner-tr { --tt-from: inset(0 0 100% 100%); right: 22px; top: calc(22px + var(--safe-top)); border-right-width: 1px; border-top-width: 1px; }
-.tt-corner-bl { --tt-from: inset(100% 100% 0 0); left: 22px; top: calc(100dvh - 64px); border-left-width: 1px; border-bottom-width: 1px; }
-.tt-corner-br { --tt-from: inset(100% 0 0 100%); right: 22px; top: calc(100dvh - 64px); border-right-width: 1px; border-bottom-width: 1px; }
+/* The lower pair sits at the foot of the first screen (.tt-first), reaching
+   back out through the page's side padding to line up with the upper pair. */
+.tt-corner-bl { --tt-from: inset(100% 100% 0 0); left: calc(22px - var(--tt-page-pad)); bottom: 22px; border-left-width: 1px; border-bottom-width: 1px; }
+.tt-corner-br { --tt-from: inset(100% 0 0 100%); right: calc(22px - var(--tt-page-pad)); bottom: 22px; border-right-width: 1px; border-bottom-width: 1px; }
 @keyframes tt-corner-draw {
   from { opacity: 0; clip-path: var(--tt-from); }
   30% { opacity: 1; }
@@ -214,17 +216,26 @@
 }
 
 .tt-page {
+  --tt-page-pad: clamp(1rem, 5vw, 4.5rem);
   position: relative;
   z-index: 1;
   display: flex;
   flex-direction: column;
   min-height: 100dvh;
-  padding: 0 clamp(1rem, 5vw, 4.5rem);
+  padding: 0 var(--tt-page-pad);
+}
+/* The first screen: the header, any banner and the stage fill the window
+   and grow past it rather than spill out of the frame. */
+.tt-first {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
 }
 
 /* ---- header: the mark left, the instruments right ---- */
 
-.tt-page > .topbar.tt-header {
+.tt-first > .topbar.tt-header {
   position: relative;
   z-index: 30;
   max-width: none;
@@ -232,7 +243,7 @@
   padding: calc(1.6rem + var(--safe-top)) 0 1rem;
   animation: fade-up 360ms var(--ease-snap) both;
 }
-.tt-page > .banner { margin-bottom: 1rem; }
+.tt-first > .banner { margin-bottom: 1rem; }
 
 /* ---- the stage: title block and menu left, recap and save slots right ---- */
 
@@ -241,7 +252,6 @@
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
   gap: 2rem clamp(1.5rem, 4vw, 4rem);
   flex: 1;
-  min-height: calc(100dvh - 5.5rem);
   padding: clamp(1rem, 4vh, 3.5rem) 0 2.5rem;
 }
 .tt-stage-left,
@@ -281,6 +291,13 @@
   line-height: 1.02;
   letter-spacing: 0.02em;
   text-wrap: balance;
+}
+/* A short window sizes the title and the spacing by its height too, so the
+   menu keeps its place on the first screen. */
+@media (min-width: 1024px) and (max-height: 900px) {
+  .tt-title { font-size: clamp(2rem, min(4.4vw, 6.4vh), 3.9rem); }
+  .tt-title-block { gap: 0.85rem; }
+  .tt-stage-left { gap: clamp(1rem, 3vh, 2rem); }
 }
 .tt-title.tt-reveal { animation: tt-title-in var(--dur-scene) var(--ease-settle) backwards; }
 @keyframes tt-title-in {
@@ -580,11 +597,23 @@
 
 /* ---- the menu: a game's main menu, diamonds and Cinzel ---- */
 
-.tt-menu {
+.tt-menu,
+.tt-menu-groups,
+.tt-menu-group {
   display: flex;
   flex-direction: column;
   gap: 4px;
   align-items: flex-start;
+}
+/* From a laptop up the ways in and the rest stand side by side; the gap
+   leaves room for the glyph that rises beside a hovered line, and a column
+   too narrow for both stacks them again. */
+@media (min-width: 840px) {
+  .tt-menu-groups {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px clamp(2.75rem, 4vw, 5.5rem);
+  }
 }
 .tt-menu-item {
   position: relative;
@@ -1249,8 +1278,8 @@
   .tt-scrim-side { background: linear-gradient(180deg, rgba(10, 8, 23, 0.55) 0%, rgba(13, 11, 28, 0.35) 40%, rgba(10, 8, 23, 0.8) 100%); }
 }
 @media (max-width: 639px) {
-  .tt-page { padding: 0 1rem; }
-  .tt-page > .topbar.tt-header { padding-top: calc(1rem + var(--safe-top)); }
+  .tt-page { --tt-page-pad: 1rem; }
+  .tt-first > .topbar.tt-header { padding-top: calc(1rem + var(--safe-top)); }
   .tt-corner { width: 28px; height: 28px; }
   .tt-corner-tl, .tt-corner-tr { top: calc(12px + var(--safe-top)); }
   .tt-corner-tl { left: 12px; }
@@ -1273,7 +1302,6 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 20rem);
     gap: 1.75rem 1.5rem;
-    min-height: calc(100dvh - 5.5rem);
   }
   .tt-stage-left,
   .tt-stage-right { display: flex; }
@@ -1296,7 +1324,7 @@
     column-gap: calc(env(viewport-segment-left 1 0) - env(viewport-segment-right 0 0) + 2rem);
     min-height: 0;
   }
-  .tt-page { padding-inline: 1.25rem; }
+  .tt-page { --tt-page-pad: 1.25rem; }
   .tt-stage-left { padding-right: 1.25rem; }
   .tt-stage-left,
   .tt-stage-right { display: flex; }
@@ -1370,8 +1398,8 @@ html[data-theme="light"] .tt-backdrop {
   mask-image: linear-gradient(180deg, #000 calc(100% - 7rem), transparent);
 }
 html[data-theme="light"] .tt-below { padding-top: 8rem; }
-html[data-theme="light"] .tt-page > .topbar.tt-header .icon-btn { color: #c9c6db; }
-html[data-theme="light"] .tt-page > .topbar.tt-header .wordmark { color: var(--tt-gold); }
+html[data-theme="light"] .tt-first > .topbar.tt-header .icon-btn { color: #c9c6db; }
+html[data-theme="light"] .tt-first > .topbar.tt-header .wordmark { color: var(--tt-gold); }
 
 /* ========================================================================
    The drawer: the device profile, the hosts and every door
@@ -1774,7 +1802,7 @@ html[data-theme="light"] .tt-page > .topbar.tt-header .wordmark { color: var(--t
    driven by the controller. The title screen's first view holds the whole
    menu and the save slots without a scroll, with a strip of button hints
    along the foot the way Steam's own screens carry one. */
-html.deck .tt-page > .topbar.tt-header { padding: calc(1.1rem + var(--safe-top)) 0 0.4rem; }
+html.deck .tt-first > .topbar.tt-header { padding: calc(1.1rem + var(--safe-top)) 0 0.4rem; }
 html.deck .tt-stage {
   gap: 1.25rem clamp(1.5rem, 4vw, 4rem);
   min-height: calc(100dvh - 4.5rem - var(--pad-hints-room));
@@ -1847,3 +1875,41 @@ html.deck:has(#app.immersive) .pad-hints { display: none; }
 }
 .pad-legend dt { font-family: var(--font-display); font-weight: 600; letter-spacing: 0.04em; color: var(--gold-200); }
 .pad-legend dd { margin: 0; color: var(--ink-300); }
+
+/* ---- the ways into a game, each with a line saying where it leads, and
+   the host they open on (home.ts menu) ---- */
+.tt-menu-text { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.tt-menu-sub {
+  margin-top: 1px;
+  font-family: var(--font-sans, inherit);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--tt-ink-dim);
+  transition: color var(--dur-quick) var(--ease-snap);
+}
+.tt-menu-item:is(:hover, :focus-visible) .tt-menu-sub,
+.pad-active .tt-menu-item:focus .tt-menu-sub { color: var(--tt-ink-soft); }
+.tt-menu-host {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--tt-ink-dim);
+}
+.tt-menu-host svg { width: 14px; height: 14px; color: var(--tt-gold); }
+.tt-menu-host-change {
+  padding: 2px 8px;
+  border: 1px solid rgba(212, 171, 58, 0.45);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--tt-gold-pale);
+  transition: background-color var(--dur-quick) var(--ease-snap), transform var(--dur-move) var(--ease-spring);
+}
+.tt-menu-host-change:is(:hover, :focus-visible) { background: rgba(212, 171, 58, 0.14); outline: none; }
+.tt-menu-host-change:active { transform: scale(0.96); }
+@media (prefers-reduced-motion: reduce) {
+  .tt-menu-host-change { transition: none; }
+}

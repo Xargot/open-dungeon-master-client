@@ -331,11 +331,19 @@ export class ShellWindow {
     this.currentOrigin = origin;
     const host = new URL(origin).hostname;
     return new Promise((resolve, reject) => {
+      let settled = false;
       const cleanup = (): void => {
+        settled = true;
         ses.cookies.off("changed", onCookie);
         view.webContents.off("did-navigate", onNavigate);
+        view.webContents.off("did-fail-load", onLoadFailure);
         this.loginCancel = null;
         if (this.view === view) this.detachView();
+      };
+      const fail = (message: string): void => {
+        if (settled) return;
+        cleanup();
+        reject(new Error(message));
       };
       const onCookie = (
         _event: Electron.Event,
@@ -343,7 +351,7 @@ export class ShellWindow {
         _cause: string,
         removed: boolean,
       ): void => {
-        if (removed || cookie.name !== "odm_session") return;
+        if (settled || removed || cookie.name !== "odm_session") return;
         if (cookie.domain && cookie.domain.replace(/^\./, "") !== host) return;
         const expiresAt = cookie.expirationDate
           ? new Date(cookie.expirationDate * 1000).toISOString()
@@ -355,6 +363,7 @@ export class ShellWindow {
       // server without Discord configured answers the start URL itself
       // with an error status instead of redirecting to the consent page.
       const onNavigate = (_event: Electron.Event, url: string, status: number): void => {
+        if (settled) return;
         if (!sameOrigin(url, origin)) return;
         let parsed: URL;
         try {
@@ -363,23 +372,33 @@ export class ShellWindow {
           return;
         }
         if (parsed.pathname === new URL(`${origin}${startPath}`).pathname && status >= 400) {
-          cleanup();
-          reject(new Error("This server has not set up Discord sign-in."));
+          fail("This server has not set up Discord sign-in.");
           return;
         }
         const error = parsed.searchParams.get("error");
         if (!error) return;
-        cleanup();
         // The same words the server's own login form uses for these codes
         // (src/app/AuthForm.tsx), so a refusal says what to do about it.
-        reject(new Error(discordErrorText(error)));
+        fail(discordErrorText(error));
+      };
+      const onLoadFailure = (
+        _event: Electron.Event,
+        code: number,
+        description: string,
+        _url: string,
+        isMainFrame: boolean,
+      ): void => {
+        // Redirects abort the previous navigation while OAuth continues.
+        if (isMainFrame && code !== -3) fail(`Discord sign-in could not load: ${description}`);
       };
       this.loginCancel = (reason) => {
+        if (settled) return;
         cleanup();
         reject(reason);
       };
       ses.cookies.on("changed", onCookie);
       view.webContents.on("did-navigate", onNavigate);
+      view.webContents.on("did-fail-load", onLoadFailure);
       view.webContents.setWindowOpenHandler(({ url }) => {
         openExternally(url);
         return { action: "deny" };
@@ -389,7 +408,10 @@ export class ShellWindow {
       });
       win.contentView.addChildView(view);
       this.layout();
-      void view.webContents.loadURL(`${origin}${startPath}`);
+      void view.webContents.loadURL(`${origin}${startPath}`).catch((err: unknown) => {
+        if (settled || (err instanceof Error && err.message.includes("ERR_ABORTED"))) return;
+        fail(`Discord sign-in could not load: ${err instanceof Error ? err.message : String(err)}`);
+      });
     });
   }
 
@@ -422,7 +444,7 @@ export class ShellWindow {
       if (isShellCookieWrite()) return;
       if (cookie.domain && cookie.domain.replace(/^\./, "") !== host) return;
       if (this.currentOrigin !== origin) return;
-      this.onRevoked?.(origin);
+      this.onRevoked?.(this.portalHost || origin);
       this.showManager();
     };
     cookies.on("changed", listener);

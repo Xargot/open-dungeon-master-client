@@ -8,9 +8,10 @@ import { landingPath } from "../shared/open-path.js";
 import { backLink, formCard, intro, joinBanner, show } from "./chrome.js";
 import { button, el, input } from "./dom.js";
 import { tryOpenNative } from "./game-screen.js";
+import { submitJoin } from "./submit-join.js";
 import { forgetObjectUrls } from "./game/object-urls.js";
 import { renderHome } from "./home.js";
-import { connectAt, hostVersions, refresh, state } from "./state.js";
+import { connectAt, hostVersions, refresh, refreshFeed, state } from "./state.js";
 import type { ServerProbe, ServerSummary } from "../shared/types";
 
 export function renderError(message: string): void {
@@ -120,29 +121,46 @@ export async function connectServer(
   path = "",
 ): Promise<void> {
   btn.disabled = true;
-  // The app's own screens first: they need the host's version (for the
-  // gate) and a live session; either missing, the web view opens instead.
-  //
-  // A probe that fails falls back to the version this host answered with
-  // earlier in the run. Without that, one slow answer sends a host the app
-  // was just drawing natively into the web view instead, where a device
-  // world serving it through the portal would answer the host's campaign
-  // paths out of its own database. tryOpenNative still refuses on its own
-  // when the session is gone, so a host that is really unreachable ends up
-  // exactly where it did before.
-  const probed = await window.odm.probeServer(server.origin).catch(() => null);
-  if (probed?.ok) hostVersions.set(server.id, probed.probe.version);
-  const version = probed?.ok ? probed.probe.version : (hostVersions.get(server.id) ?? "");
-  if (version) {
-    const native = await tryOpenNative(
-      server.id,
-      landingPath(state.joinIntent?.code ?? "", path),
-      version,
-    ).catch(() => false);
-    if (native) {
+  if (window.odm.prepareRemote) {
+    // Desktop uses the same identity, relocation and session checks as its
+    // embedded view before handing a token to the native game screens.
+    const prepared = await window.odm.prepareRemote(server.id, state.joinIntent?.code).catch(() => null);
+    if (prepared && !prepared.ok) {
       btn.disabled = false;
-      state.joinIntent = null;
+      if (prepared.needsLogin) await signInTo(prepared.origin || server.origin, server.username);
+      else renderError(prepared.error);
       return;
+    }
+    if (prepared?.ok) {
+      hostVersions.set(server.id, prepared.version);
+      const native = await tryOpenNative(
+        server.id,
+        landingPath(state.joinIntent?.code ?? "", path),
+        prepared.version,
+        prepared.session,
+      ).catch(() => false);
+      if (native) {
+        btn.disabled = false;
+        state.joinIntent = null;
+        return;
+      }
+    }
+  } else {
+    // Android has its own bridge and keeps its existing native entry path.
+    const probed = await window.odm.probeServer(server.origin).catch(() => null);
+    if (probed?.ok) hostVersions.set(server.id, probed.probe.version);
+    const version = probed?.ok ? probed.probe.version : (hostVersions.get(server.id) ?? "");
+    if (version) {
+      const native = await tryOpenNative(
+        server.id,
+        landingPath(state.joinIntent?.code ?? "", path),
+        version,
+      ).catch(() => false);
+      if (native) {
+        btn.disabled = false;
+        state.joinIntent = null;
+        return;
+      }
     }
   }
   const result = await connectAt(server.id, state.joinIntent?.code, path);
@@ -225,14 +243,7 @@ export function renderAdd(prefill: string): void {
   form.append(originLabel, error, submit);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    submit.disabled = true;
-    error.textContent = "";
-    void openTyped(originField.value).then((message) => {
-      if (message) {
-        submit.disabled = false;
-        error.textContent = message;
-      }
-    });
+    void submitJoin(() => openTyped(originField.value), submit, error);
   });
   const hint = el(
     "p",
@@ -381,10 +392,13 @@ export function renderAuth(
   submit.type = "submit";
   submit.classList.add("block");
   form.append(error, submit);
+  // The new sign-in's tables are asked for at once: the home otherwise
+  // showed this host offline until the next refresh came round.
   const landed = async (): Promise<void> => {
     state.joinIntent = null;
     await refresh();
     renderHome();
+    void refreshFeed();
   };
   form.addEventListener("submit", (event) => {
     event.preventDefault();

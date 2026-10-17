@@ -16,10 +16,12 @@ import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.Iterator;
+import java.util.regex.Pattern;
 import java.util.zip.ZipInputStream;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -203,22 +205,45 @@ final class WorldEnvironment {
         return 256;
     }
 
-    /** The address friends on the same network use; empty when there is no Wi-Fi address. */
+    /**
+     * The address friends on the same network use; empty when there is no
+     * Wi-Fi address. Mirrors the desktop's picker (src/shared/lan.ts): the
+     * phone's mobile-data and VPN interfaces are left out, since a friend at
+     * the table cannot reach them (a carrier hands out 10.x addresses too),
+     * and private ranges come first.
+     */
     static String lanOrigin(int listenPort) {
         if (listenPort <= 0) return "";
+        List<String[]> found = new ArrayList<>();
         try {
             for (NetworkInterface iface : Collections.list(NetworkInterface.getNetworkInterfaces())) {
                 if (!iface.isUp() || iface.isLoopback()) continue;
-                List<InetAddress> addresses = Collections.list(iface.getInetAddresses());
-                for (InetAddress address : addresses) {
+                for (InetAddress address : Collections.list(iface.getInetAddresses())) {
                     if (address instanceof Inet4Address && !address.isLoopbackAddress() && !address.isLinkLocalAddress()) {
-                        return "http://" + address.getHostAddress() + ":" + listenPort;
+                        found.add(new String[] { iface.getName(), address.getHostAddress() });
                     }
                 }
             }
         } catch (Exception e) {
             Log.w(TAG, "No LAN address: " + e.getMessage());
         }
-        return "";
+        String address = pickLanAddress(found);
+        return address.isEmpty() ? "" : "http://" + address + ":" + listenPort;
+    }
+
+    // Mobile data (rmnet on Qualcomm, ccmni on MediaTek, the IPv4 shim clat
+    // and v4-), VPNs and tunnels: no way in for somebody on the same Wi-Fi.
+    private static final Pattern NOT_LAN = Pattern.compile("^(rmnet|ccmni|pdp|clat|v4-|tun|ppp|ipsec|dummy|ifb|sit|ip6tnl)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern PRIVATE_V4 = Pattern.compile("^(10\\.|192\\.168\\.|172\\.(1[6-9]|2\\d|3[01])\\.)");
+
+    /** The address to offer, from { interface name, IPv4 address } pairs in interface order; "" when none fits. */
+    static String pickLanAddress(List<String[]> interfaces) {
+        String fallback = "";
+        for (String[] entry : interfaces) {
+            if (NOT_LAN.matcher(entry[0]).find()) continue;
+            if (PRIVATE_V4.matcher(entry[1]).find()) return entry[1];
+            if (fallback.isEmpty()) fallback = entry[1];
+        }
+        return fallback;
     }
 }

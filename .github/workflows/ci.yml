@@ -1,8 +1,9 @@
 # Checks every pull request and every push to main: lint, the desktop
 # build and its tests, the mobile tests and type check, the main process's
 # file-handling tests on Windows, and the Android unit tests (PayloadStore
-# recovery, the local asset index). The release workflow runs the same
-# checks before a release goes live.
+# recovery, the local asset index) with a minified release build checked
+# for what R8 must keep. The release workflow runs the same checks before
+# a release goes live.
 #
 # The renderer bundles the server's page components, so the server repo is
 # checked out beside the client at its default branch: a client change has
@@ -135,6 +136,10 @@ jobs:
       - name: Build web assets and sync Capacitor
         working-directory: mobile
         run: npm run sync
-      - name: Android unit tests
+      # A release build too (unsigned here), for what only R8 changes: the
+      # plugin classes and bridge methods Capacitor reaches by name.
+      - name: Android unit tests and a minified release build
         working-directory: mobile/android
-        run: ./gradlew testDebugUnitTest --stacktrace
+        run: ./gradlew testDebugUnitTest assembleRelease --stacktrace
+      - name: R8 kept what the plugin bridge calls by name
+        run: node mobile/scripts/check-r8-keeps.mjs

@@ -62,6 +62,9 @@ interface RegistryFile {
   // The Steam Deck layout forced on or off in Settings; absent means auto
   // (on on a Deck and in Steam's Game Mode).
   deckLayout?: "on" | "off";
+  // The first-launch offer to add the app to Steam was answered; it is
+  // made once, and Settings keeps the button after it.
+  steamOfferAnswered?: true;
   // Per room code, the secret that claims it in the broker's table
   // registry. Kept so the same code can be pointed at next session's
   // address; nobody else can move a table this shell claimed.
@@ -75,6 +78,36 @@ interface RegistryFile {
   forgetSignInsOnClose?: true;
 }
 
+const emptyRegistry = (): RegistryFile => ({ version: 1, servers: [] });
+
+function parseRegistry(text: string): RegistryFile | null {
+  try {
+    const parsed = JSON.parse(text) as RegistryFile;
+    if (parsed && parsed.version === 1 && Array.isArray(parsed.servers)) return parsed;
+  } catch {
+    // Not JSON.
+  }
+  return null;
+}
+
+// Windows holds a file for a moment while Defender or the indexer reads it;
+// a read that fails that way is tried again before the file counts as
+// unreadable. Tests shorten the wait.
+const BUSY_CODES = new Set(["EBUSY", "EPERM", "EACCES", "EAGAIN"]);
+export const registryPatience = { attempts: 5, delayMs: 100 };
+
+function readPatiently(file: string): string {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return fs.readFileSync(file, "utf8");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      if (!BUSY_CODES.has(code) || attempt >= registryPatience.attempts) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, registryPatience.delayMs);
+    }
+  }
+}
+
 export class ServerStore {
   // The parsed registry and the file stamp it was read at. Most accessors
   // run on every IPC call and status event, and each used to read and parse
@@ -83,11 +116,24 @@ export class ServerStore {
   private cached: { stamp: string; registry: RegistryFile } | null = null;
   // Tokens kept for this run only (forgetSignInsOnClose), by entry id.
   private readonly sessionTokens = new Map<string, string>();
+  // The file is there but could not be read: this run keeps its changes in
+  // memory and never writes over it.
+  private unreadable = false;
+  // The copy of the file this run read cleanly first, kept beside it.
+  private keptLastGood = false;
 
   constructor(
     private readonly file: string,
     private readonly crypt: TokenCrypt,
+    private readonly log: (line: string) => void = console.warn,
   ) {}
+
+  // A copy of the registry as it read cleanly at the start of the last run
+  // (the device world's made-up password lives only here), restored from
+  // when the file turns up damaged.
+  private get lastGood(): string {
+    return `${this.file}.last-good`;
+  }
 
   private stamp(): string {
     try {
@@ -107,21 +153,79 @@ export class ServerStore {
     return structuredClone(this.cached.registry);
   }
 
+  // A missing file is a first run. A damaged one used to read as an empty
+  // list that the next save wrote over, taking every saved server and the
+  // device world's password with it; now its bytes are kept under a dated
+  // name and the copy from the last clean start takes its place.
   private read(): RegistryFile {
+    let text: string;
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.file, "utf8")) as RegistryFile;
-      if (parsed && parsed.version === 1 && Array.isArray(parsed.servers)) return parsed;
-    } catch {
-      // Missing or corrupt registry: start clean rather than crash the shell.
+      text = readPatiently(this.file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyRegistry();
+      this.unreadable = true;
+      this.log(`[servers] ${this.file} could not be read (${(error as Error).message}); changes stay in memory this run`);
+      return emptyRegistry();
     }
-    return { version: 1, servers: [] };
+    const parsed = parseRegistry(text);
+    if (parsed) {
+      this.unreadable = false;
+      if (!this.keptLastGood) {
+        this.keptLastGood = true;
+        try {
+          fs.writeFileSync(this.lastGood, text, { mode: 0o600 });
+        } catch (error) {
+          this.log(`[servers] could not keep a copy of the saved servers: ${(error as Error).message}`);
+        }
+      }
+      return parsed;
+    }
+    const aside = `${this.file}.damaged-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    try {
+      fs.renameSync(this.file, aside);
+    } catch (error) {
+      this.unreadable = true;
+      this.log(`[servers] ${this.file} is damaged and could not be set aside (${(error as Error).message}); changes stay in memory this run`);
+      return emptyRegistry();
+    }
+    let backup: RegistryFile | null = null;
+    try {
+      backup = parseRegistry(fs.readFileSync(this.lastGood, "utf8"));
+    } catch {
+      // No copy yet.
+    }
+    this.log(
+      `[servers] ${this.file} was damaged; kept as ${path.basename(aside)}` +
+        (backup ? ", the saved servers from the last start are back" : ", and there was no earlier copy to bring back"),
+    );
+    if (!backup) return emptyRegistry();
+    this.save(backup);
+    return backup;
   }
 
+  // Written to a temp file of its own, flushed to disk, then renamed over
+  // the file: a crash or power cut leaves the old file or the new one,
+  // never a torn or empty one.
   private save(registry: RegistryFile): void {
+    if (this.unreadable) {
+      this.cached = { stamp: this.stamp(), registry: structuredClone(registry) };
+      return;
+    }
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(registry, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, this.file);
+    const tmp = `${this.file}.${process.pid}-${randomUUID().slice(0, 8)}.tmp`;
+    try {
+      const fd = fs.openSync(tmp, "w", 0o600);
+      try {
+        fs.writeFileSync(fd, JSON.stringify(registry, null, 2));
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(tmp, this.file);
+    } catch (error) {
+      fs.rmSync(tmp, { force: true });
+      throw error;
+    }
     this.cached = { stamp: this.stamp(), registry: structuredClone(registry) };
   }
 
@@ -360,6 +464,16 @@ export class ServerStore {
     const registry = this.load();
     if (choice === "auto") delete registry.deckLayout;
     else registry.deckLayout = choice;
+    this.save(registry);
+  }
+
+  steamOfferAnswered(): boolean {
+    return this.load().steamOfferAnswered === true;
+  }
+
+  answerSteamOffer(): void {
+    const registry = this.load();
+    registry.steamOfferAnswered = true;
     this.save(registry);
   }
 

@@ -7,6 +7,10 @@ buildscript {
         mavenCentral()
     }
     dependencies {
+        // 8.7.2, not 8.10: with the per-ABI APK splits (app/build.gradle),
+        // AGP 8.10's bundleRelease fails in PerModuleBundleTask ("Sequence
+        // contains more than one matching element"), so the release run could
+        // not build the Play bundle. 8.7.2 builds both, and R8 keeps the same.
         classpath 'com.android.tools.build:gradle:8.7.2'
         classpath 'com.google.gms:google-services:4.4.2'
 

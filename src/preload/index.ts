@@ -18,6 +18,8 @@ const bridge: OdmBridge = {
   discordLogin: (input) => ipcRenderer.invoke("servers:discord-login", input),
   connect: (serverId: string, joinCode?: string, path?: string) =>
     ipcRenderer.invoke("servers:connect", serverId, joinCode, path),
+  prepareRemote: (serverId: string, joinCode?: string) =>
+    ipcRenderer.invoke("servers:prepare-native", serverId, joinCode),
   removeServer: (serverId: string) => ipcRenderer.invoke("servers:remove", serverId),
   deleteAccount: (input) => ipcRenderer.invoke("servers:delete-account", input),
   homeFeed: () => ipcRenderer.invoke("home:feed"),
@@ -39,7 +41,9 @@ const bridge: OdmBridge = {
   localLogin: (input) => ipcRenderer.invoke("local:login", input),
   localConfigureAi: (setup: AiSetup) => ipcRenderer.invoke("local:configure-ai", setup),
   localAiSaved: () => ipcRenderer.invoke("local:ai-saved"),
+  localAiModels: (apiKey: string) => ipcRenderer.invoke("local:ai-models", String(apiKey ?? "")),
   localHarnessStatus: (refresh?: boolean) => ipcRenderer.invoke("local:harness-status", Boolean(refresh)),
+  localHarnessPictures: () => ipcRenderer.invoke("local:harness-pictures"),
   localPlay: (joinCode?: string, path?: string) =>
     ipcRenderer.invoke("local:play", joinCode, path),
   shareStart: () => ipcRenderer.invoke("share:start"),
@@ -61,6 +65,9 @@ const bridge: OdmBridge = {
   appInfo: () => ipcRenderer.invoke("app:info"),
   setDeckChoice: (choice) => ipcRenderer.invoke("deck:set-choice", choice),
   steamKeyboard: (open, field, multiline) => ipcRenderer.invoke("deck:keyboard", open, field, multiline),
+  addToSteam: (restart: boolean) => ipcRenderer.invoke("steam:add", restart),
+  steamOffer: () => ipcRenderer.invoke("steam:offer"),
+  answerSteamOffer: () => ipcRenderer.invoke("steam:offer-answered"),
   updateCheck: () => ipcRenderer.invoke("update:check"),
   updateInstall: () => ipcRenderer.invoke("update:install"),
   localVerify: () => ipcRenderer.invoke("local:verify"),

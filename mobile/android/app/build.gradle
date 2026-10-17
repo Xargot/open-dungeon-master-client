@@ -4,10 +4,15 @@ apply plugin: 'com.android.application'
 // electron-builder names the desktop installers from and the release tag
 // tracks, so the Android build cannot drift to a version of its own.
 // Play requires versionCode to only ever grow, so it is derived as
-// major*10000 + minor*100 + patch.
+// major*10000 + minor*100 + patch. That only grows while minor and patch
+// stay under 100 (0.17.100 would collide with 0.18.0), so a version past
+// that stops the build rather than ship a code that does not grow.
 def versionMatch = file('../../../package.json').text =~ /"version"\s*:\s*"(\d+)\.(\d+)\.(\d+)"/
 if (!versionMatch.find()) {
     throw new GradleException('the root package.json has no x.y.z version')
+}
+if (versionMatch.group(2).toInteger() > 99 || versionMatch.group(3).toInteger() > 99) {
+    throw new GradleException("version ${versionMatch.group(0)}: minor and patch must stay under 100 for the Android versionCode to keep growing")
 }
 def appVersionName = "${versionMatch.group(1)}.${versionMatch.group(2)}.${versionMatch.group(3)}"
 def appVersionCode = versionMatch.group(1).toInteger() * 10000 +

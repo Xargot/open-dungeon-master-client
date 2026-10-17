@@ -45,7 +45,7 @@ against Play policy, ordered by how hard it blocks a submission.
 | versionName / versionCode | 0.7.3 / 703 | derived from the repo root `package.json` by `mobile/android/app/build.gradle`; read back from the released APK with `apkanalyzer manifest version-code` |
 | minSdk / targetSdk / compileSdk | 26 / 36 / 36 | `mobile/android/variables.gradle` |
 | ABIs shipped | `arm64-v8a`, `x86_64` | `mobile/scripts/bundle-android-payload.mjs` |
-| Artifacts CI produces | signed universal **APK** (GitHub download, 133 MB) and signed **AAB** (Play upload, 132 MB), both before Play's per-ABI split | `.github/workflows/release.yml` |
+| Artifacts CI produces | signed **arm64-v8a APK** (GitHub download, split per ABI since the 2026-09-23 size work) and signed **AAB** (Play upload, which Play splits per device); the x86_64 APK is built for the emulator launch check and not published. Before the draft goes live the release checks the signed APK's dex for every plugin method R8 must keep and starts the x86_64 APK on an emulator | `.github/workflows/release.yml` |
 | Native libraries | `libnode.so` (Node 24.20.0), `libcloudflared.so` (cloudflared 2026.8.3), `libc++_shared.so` | `mobile/android/app/src/main/jniLibs/` |
 | 16 KB page alignment | Yes, all three ELF LOAD segments align at 0x4000 | verified with `readelf -lW` |
 | 64-bit support | Yes, both shipped ABIs are 64-bit | no 32-bit ABI is built |
@@ -437,10 +437,24 @@ GitHub-released APK, which matters for App Links (see B-7). You decided to
 enroll; the outstanding half is copying the Google-managed fingerprint into
 the `j-redirector` Worker afterwards.
 
+The different certificate also matters to players, and more than App Links do.
+Android only installs an app over one signed by the same key, so a phone with
+the GitHub APK cannot take the Play build (or the other way round) without
+uninstalling first, and uninstalling deletes the phone's world. When enrolling,
+Play offers to sign with a key you upload instead of one it generates ("Use a
+different key", exported from `odm-release.keystore` with Google's PEPK tool).
+Doing that keeps both channels on one certificate: either build installs over
+the other, and assetlinks needs no second fingerprint. The cost is that the
+key in `~/.local/share/odm` stays as precious as it is today, since Google
+then holds a copy of it rather than a key of its own. Either way, the README
+tells players to use Move your world before switching channels.
+
 **Version codes, checked 2026-09-06.** The released v0.7.3 APK reads
 versionCode 703 and versionName 0.7.3; the 0.4.0 build before it reads 400.
 The formula never produced the five-digit codes an earlier draft of this
-document quoted, so the sequence Play sees will only grow. Since 1eda722 the
+document quoted, so the sequence Play sees will only grow, as long as minor
+and patch stay under 100 (0.17.100 would collide with 0.18.0); the build now
+stops on a version past that. Since 1eda722 the
 version is read from the repo root `package.json` rather than
 `mobile/package.json`, which is what stopped the 0.7.3 tag from shipping an
 app stamped 0.7.2.

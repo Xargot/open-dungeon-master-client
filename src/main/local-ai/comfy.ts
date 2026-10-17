@@ -34,17 +34,63 @@ export const CHECKPOINT = {
   sha256: "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
 };
 
-// Torch wheels come from a hardware-specific index: CUDA for NVIDIA, ROCm
-// for AMD on Linux only (no ROCm wheels exist for Windows), the CPU index
-// when there is no usable GPU signal. macOS ships MPS in the default PyPI
+// Torch wheels come from a hardware-specific index, and each index carries
+// builds for only some Python versions: cu124 stops at torch 2.6 and Python
+// 3.13, so a Python 3.14 found no torch there at all. CUDA 12.6 for NVIDIA
+// cards up to Hopper: current torch, and the older cards the 12.8 builds
+// dropped. Blackwell (compute capability 10 and up, the RTX 50 series)
+// needs CUDA 12.8, whose drivers those cards require anyway. ROCm 6.4 for
+// AMD on Linux only (no ROCm wheels exist for Windows), the CPU index when
+// there is no usable GPU signal. macOS ships MPS in the default PyPI
 // wheels, hence null (no extra index at all).
 export function torchIndexUrl(hardware: HardwareInfo): string | null {
   if (hardware.platform === "darwin") return null;
-  if (hardware.gpuVendor === "nvidia") return "https://download.pytorch.org/whl/cu124";
+  if (hardware.gpuVendor === "nvidia") {
+    return (hardware.gpuCompute ?? 0) >= 10
+      ? "https://download.pytorch.org/whl/cu128"
+      : "https://download.pytorch.org/whl/cu126";
+  }
   if (hardware.gpuVendor === "amd" && hardware.platform === "linux") {
-    return "https://download.pytorch.org/whl/rocm6.2";
+    return "https://download.pytorch.org/whl/rocm6.4";
   }
   return "https://download.pytorch.org/whl/cpu";
+}
+
+// Every index above has torch for Python 3.10 to 3.14, and ComfyUI's
+// requirements install as wheels on all of them. A system Python outside
+// that range (Fedora's and Arch's 3.14 is inside; macOS's own 3.9 is not)
+// is passed over for a versioned one beside it.
+export const PYTHON_MIN = [3, 10] as const;
+export const PYTHON_MAX = [3, 14] as const;
+
+export function parsePythonVersion(text: string): [number, number] | null {
+  const match = /(\d+)\.(\d+)/.exec(text);
+  return match ? [Number(match[1]), Number(match[2])] : null;
+}
+
+export function pythonSupported(version: [number, number] | null): boolean {
+  if (!version) return false;
+  const [major, minor] = version;
+  return major === 3 && minor >= PYTHON_MIN[1] && minor <= PYTHON_MAX[1];
+}
+
+// The Pythons to try, best first: the versions ComfyUI is most at home on,
+// then the newest supported, then whatever the bare name is. Windows asks
+// the py launcher for a version, the others look for versioned names.
+export function pythonCandidates(platform: string): Command[] {
+  const minors = [13, 12, 11, 10, 14];
+  if (platform === "win32") {
+    return [
+      ...minors.map((minor) => ({ bin: "py", args: [`-3.${minor}`] })),
+      { bin: "python", args: [] },
+      { bin: "py", args: [] },
+    ];
+  }
+  return [
+    ...minors.map((minor) => ({ bin: `python3.${minor}`, args: [] })),
+    { bin: "python3", args: [] },
+    { bin: "python", args: [] },
+  ];
 }
 
 export interface Command {
@@ -63,9 +109,10 @@ export function venvPython(rootDir: string, platform: string): string {
 // so pip resolves the hardware-matched build instead of the default one.
 export function installCommands(
   rootDir: string,
-  systemPython: string,
+  systemPython: string | Command,
   hardware: HardwareInfo,
 ): [Command, Command, Command, Command] {
+  const system = typeof systemPython === "string" ? { bin: systemPython, args: [] } : systemPython;
   const appDir = path.join(rootDir, "ComfyUI");
   const python = venvPython(rootDir, hardware.platform);
   const index = torchIndexUrl(hardware);
@@ -73,7 +120,7 @@ export function installCommands(
   if (index) torch.push("--index-url", index);
   return [
     { bin: "git", args: ["clone", "--depth", "1", "--branch", COMFY_TAG, COMFY_REPO, appDir] },
-    { bin: systemPython, args: ["-m", "venv", path.join(rootDir, "venv")] },
+    { bin: system.bin, args: [...system.args, "-m", "venv", path.join(rootDir, "venv")] },
     { bin: python, args: torch },
     { bin: python, args: ["-m", "pip", "install", "-r", path.join(appDir, "requirements.txt")] },
   ];
@@ -82,6 +129,7 @@ export function installCommands(
 export class ComfyManager {
   private child: ChildProcess | null = null;
   private externalServer = false;
+  private ready = false;
   private error = "";
 
   constructor(
@@ -116,24 +164,40 @@ export class ComfyManager {
     const installed = this.installed();
     return {
       installed,
-      running: this.externalServer || (this.child !== null && this.child.exitCode === null),
+      running: this.externalServer || (this.ready && this.child !== null && this.child.exitCode === null),
       checkpoint: installed ? CHECKPOINT.file : "",
       error: this.error,
     };
   }
 
-  private async findPython(): Promise<string> {
-    const names = process.platform === "win32" ? ["python", "py"] : ["python3", "python"];
-    for (const name of names) {
-      try {
-        await runFile(name, ["--version"]);
-        return name;
-      } catch {
-        // Keep looking.
-      }
+  private async pythonVersion(command: Command): Promise<[number, number] | null> {
+    try {
+      const { stdout } = await runFile(command.bin, [
+        ...command.args,
+        "-c",
+        "import sys; print('%d.%d' % sys.version_info[:2])",
+      ]);
+      return parsePythonVersion(stdout);
+    } catch {
+      return null;
+    }
+  }
+
+  private async findPython(): Promise<Command> {
+    const unsupported: string[] = [];
+    for (const candidate of pythonCandidates(process.platform)) {
+      const version = await this.pythonVersion(candidate);
+      if (pythonSupported(version)) return candidate;
+      if (version) unsupported.push(version.join("."));
+    }
+    const range = `${PYTHON_MIN.join(".")} to ${PYTHON_MAX.join(".")}`;
+    if (unsupported.length) {
+      throw new Error(
+        `Local image generation needs Python ${range}, and this computer has Python ${[...new Set(unsupported)].join(", ")}. Install Python 3.13 (python.org or your package manager) beside it, then try again.`,
+      );
     }
     throw new Error(
-      "Python 3 is required for local image generation. Install it (python.org or your package manager), then try again.",
+      `Python ${range} is required for local image generation. Install Python 3.13 (python.org or your package manager), then try again.`,
     );
   }
 
@@ -182,7 +246,13 @@ export class ComfyManager {
           throw new Error(`ComfyUI ${COMFY_TAG} is not the release this app was tested with, so it was not installed.`);
         }
       }
-      if (!fs.existsSync(venvPython(this.rootDir, process.platform))) {
+      const venvBin = venvPython(this.rootDir, process.platform);
+      if (fs.existsSync(venvBin) && !pythonSupported(await this.pythonVersion({ bin: venvBin, args: [] }))) {
+        // Made by an earlier install from a Python torch has no build for (or
+        // its Python is gone): pip can never fill it, so make it again.
+        fs.rmSync(path.join(this.rootDir, "venv"), { recursive: true, force: true });
+      }
+      if (!fs.existsSync(venvBin)) {
         onProgress("Creating the Python environment", 8);
         await this.run(venv, "Creating the Python environment");
       }
@@ -211,7 +281,7 @@ export class ComfyManager {
       const response = await fetch(`${ORIGIN}/system_stats`, {
         signal: AbortSignal.timeout(1500),
       });
-      return response.status > 0;
+      return response.ok;
     } catch {
       return false;
     }
@@ -223,6 +293,7 @@ export class ComfyManager {
       // Someone already runs ComfyUI here (a hand-managed install). Theirs
       // wins; nothing to manage.
       this.externalServer = true;
+      this.error = "";
       return;
     }
     const python = venvPython(this.rootDir, process.platform);
@@ -232,21 +303,55 @@ export class ComfyManager {
       [path.join(this.appDir, "main.py"), "--listen", "127.0.0.1", "--port", String(PORT)],
       { cwd: this.appDir, stdio: ["ignore", log, log] },
     );
-    fs.closeSync(log);
     this.child = child;
+    this.ready = false;
+    let launchFailed = false;
+    const launchFailure = new Promise<never>((_resolve, reject) => {
+      child.once("error", (err) => {
+        launchFailed = true;
+        if (this.child === child) {
+          this.child = null;
+          this.error = `The image server could not start: ${err.message}`;
+          this.onChange();
+        }
+        reject(new Error(`The image server could not start: ${err.message}`));
+      });
+    });
     child.once("exit", () => {
       if (this.child === child) {
         this.child = null;
+        this.ready = false;
         this.error = "The image server stopped (see comfy.log).";
         this.onChange();
       }
     });
+    fs.closeSync(log);
     // Torch imports are slow on first boot; the health poll is patient. The
     // first image request simply waits if the player beats the server up.
-    const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline && child.exitCode === null) {
-      if (await this.portInUse()) break;
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    // Running means answering (#40), and a program that cannot be launched
+    // at all emits error and never exit (#37): either ends the wait.
+    try {
+      const healthy = await Promise.race([launchFailure, (async () => {
+        const deadline = Date.now() + 60_000;
+        while (Date.now() < deadline && child.exitCode === null && !launchFailed) {
+          if (await this.portInUse()) return true;
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+        return false;
+      })()]);
+      if (!healthy || this.child !== child || child.exitCode !== null) {
+        throw new Error(child.exitCode === null
+          ? "The image server did not become healthy in time (see comfy.log)."
+          : "The image server exited during startup (see comfy.log).");
+      }
+      this.ready = true;
+      this.error = "";
+      this.onChange();
+    } catch (err) {
+      await this.stop();
+      this.error = err instanceof Error ? err.message : String(err);
+      this.onChange();
+      throw err;
     }
   }
 
@@ -254,14 +359,19 @@ export class ComfyManager {
     const child = this.child;
     this.child = null;
     this.externalServer = false;
+    this.ready = false;
     if (child && child.exitCode === null) {
-      child.kill("SIGTERM");
       await new Promise<void>((resolve) => {
-        const killer = setTimeout(() => child.kill("SIGKILL"), 8000);
-        child.once("exit", () => {
+        const done = (): void => {
           clearTimeout(killer);
+          child.off("exit", done);
+          child.off("error", done);
           resolve();
-        });
+        };
+        child.once("exit", done);
+        child.once("error", done);
+        const killer = setTimeout(() => { child.kill("SIGKILL"); done(); }, 8000);
+        child.kill("SIGTERM");
       });
     }
   }

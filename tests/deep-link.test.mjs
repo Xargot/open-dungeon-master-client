@@ -145,6 +145,15 @@ test("parseLinkOrAddress reads invites first, then a bare address as a codeless 
   assert.equal(parseLinkOrAddress(""), null);
 });
 
+test("malformed percent escapes in a join link return invalid input", () => {
+  assert.equal(parseLinkOrAddress("https://play.example.com/join/%ZZ"), null);
+  assert.equal(parseLinkOrAddress("https://play.example.com/join/%E0%A4%A"), null);
+  assert.deepEqual(parseLinkOrAddress("https://play.example.com/join/ABCD2345"), {
+    origin: "https://play.example.com",
+    code: "ABCD2345",
+  });
+});
+
 test("parseRoomCode expands a room code into the host it names", () => {
   assert.deepEqual(parseRoomCode("ABCD2345-EFGH6789"), {
     origin: "https://play-abcd2345.opendungeonmaster.com",

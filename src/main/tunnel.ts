@@ -80,7 +80,7 @@ export class QuickTunnel {
   private url = "";
   private mode: TunnelStatus["mode"] = "";
   private session: BrokerSession | null = null;
-  private stopRequested = false;
+  private startGeneration = 0;
   private error = "";
   private readonly listeners = new Set<() => void>();
 
@@ -204,6 +204,7 @@ export class QuickTunnel {
     const log = fs.createWriteStream(this.logFile, { flags: "a" });
     child.stdout?.on("data", (chunk) => log.write(chunk));
     child.stderr?.on("data", (chunk) => log.write(chunk));
+    child.once("error", () => log.end());
     child.once("exit", () => log.end());
   }
 
@@ -224,13 +225,22 @@ export class QuickTunnel {
         () => finish(new Error("The tunnel never reported its address (see tunnel.log).")),
         URL_WAIT_MS,
       );
-      const scan = (chunk: Buffer): void => {
+      // Output chunks can split the scheme or hostname. Keep only enough
+      // recent text for one DNS name, independently for each stream.
+      const tails = { stdout: "", stderr: "" };
+      const scan = (stream: keyof typeof tails) => (chunk: Buffer): void => {
         log.write(chunk);
-        const match = QUICK_URL_SHAPE.exec(chunk.toString());
+        const output = tails[stream] + chunk.toString();
+        const match = QUICK_URL_SHAPE.exec(output);
         if (match) finish(null, match[0]);
+        tails[stream] = output.slice(-512);
       };
-      child.stdout?.on("data", scan);
-      child.stderr?.on("data", scan);
+      child.stdout?.on("data", scan("stdout"));
+      child.stderr?.on("data", scan("stderr"));
+      child.once("error", (err) => {
+        log.end();
+        finish(new Error(`The tunnel helper could not start: ${err.message}`));
+      });
       child.once("exit", () => {
         log.end();
         finish(new Error("cloudflared exited during startup (see tunnel.log)."));
@@ -250,7 +260,7 @@ export class QuickTunnel {
   ): Promise<void> {
     const deadline = Date.now() + budgetMs;
     while (Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error("The tunnel closed while warming up.");
+      if (this.child !== child || child.exitCode !== null) throw new Error("The tunnel closed while warming up.");
       try {
         const response = await fetch(
           `https://cloudflare-dns.com/dns-query?name=${host}&type=A`,
@@ -275,7 +285,7 @@ export class QuickTunnel {
   ): Promise<void> {
     const deadline = Date.now() + budgetMs;
     while (Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error("The tunnel closed while warming up.");
+      if (this.child !== child || child.exitCode !== null) throw new Error("The tunnel closed while warming up.");
       try {
         const response = await fetch(url, { signal: AbortSignal.timeout(4000) });
         if (response.ok) return;
@@ -304,13 +314,22 @@ export class QuickTunnel {
       : ["tunnel", "--no-autoupdate", "--url", `http://127.0.0.1:${localPort}`];
     const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
     this.child = child;
+    const launchFailure = new Promise<never>((_resolve, reject) => {
+      child.once("error", (err) => {
+        if (this.child === child) {
+          this.child = null;
+          if (this.state === "running") this.setState("error", `The tunnel helper failed: ${err.message}`);
+        }
+        reject(new Error(`The tunnel helper could not start: ${err.message}`));
+      });
+    });
     this.session = session;
     this.mode = session ? "named" : "quick";
     if (session) {
       this.url = session.url;
       this.attachLog(child);
     } else {
-      this.url = await this.captureUrl(child);
+      this.url = await Promise.race([this.captureUrl(child), launchFailure]);
     }
     child.once("exit", () => {
       if (this.child === child) {
@@ -328,19 +347,19 @@ export class QuickTunnel {
       // to an anonymous trycloudflare address on either was the bug: the
       // host was handed a worse address than the one already minted. Give
       // the edge a short moment, then hand over the name regardless.
-      await this.waitDns(new URL(this.url).hostname, child, WARMUP_WAIT_MS).catch(
+      await Promise.race([this.waitDns(new URL(this.url).hostname, child, WARMUP_WAIT_MS).catch(
         () => undefined,
-      );
-      await this.waitReachable(`${this.url}/api/health`, child, WARMUP_WAIT_MS).catch(
+      ), launchFailure]);
+      await Promise.race([this.waitReachable(`${this.url}/api/health`, child, WARMUP_WAIT_MS).catch(
         () => undefined,
-      );
+      ), launchFailure]);
       if (child.exitCode !== null) {
         throw new Error("The tunnel helper stopped as it started.");
       }
       return;
     }
-    await this.waitDns(new URL(this.url).hostname, child);
-    await this.waitReachable(`${this.url}/api/health`, child);
+    await Promise.race([this.waitDns(new URL(this.url).hostname, child), launchFailure]);
+    await Promise.race([this.waitReachable(`${this.url}/api/health`, child), launchFailure]);
   }
 
   // Tears down a half-started attempt without touching the public state, so
@@ -349,43 +368,64 @@ export class QuickTunnel {
     const child = this.child;
     this.child = null;
     if (child && child.exitCode === null) {
-      child.kill("SIGTERM");
       await new Promise<void>((resolve) => {
-        const killer = setTimeout(() => child.kill("SIGKILL"), 5000);
-        child.once("exit", () => {
+        const done = (): void => {
           clearTimeout(killer);
+          child.off("exit", done);
+          child.off("error", done);
           resolve();
-        });
+        };
+        child.once("exit", done);
+        child.once("error", done);
+        const killer = setTimeout(() => { child.kill("SIGKILL"); done(); }, 5000);
+        child.kill("SIGTERM");
       });
     }
   }
 
   private async doStart(localPort: number): Promise<TunnelStatus> {
-    this.stopRequested = false;
+    const generation = ++this.startGeneration;
+    const cancelled = (): boolean => generation !== this.startGeneration;
+    const requireActive = (): void => {
+      if (cancelled()) throw new Error("stopped");
+    };
     this.setState("starting");
     try {
       const bin = await this.ensureBinary();
+      requireActive();
       const session = await this.requestBrokerSession(localPort);
+      if (cancelled()) {
+        if (session) {
+          this.session = session;
+          await this.releaseBrokerSession();
+        }
+        throw new Error("stopped");
+      }
       if (session) {
         try {
           await this.launch(bin, localPort, session);
+          requireActive();
           this.setState("running");
           return this.status();
         } catch {
-          if (this.stopRequested) throw new Error("stopped");
+          requireActive();
           // The broker answered but its tunnel never came up (bad token,
           // stuck DNS, edge trouble). A quick tunnel is better than an
           // error, so release the session and try again anonymously.
           await this.killChild();
           await this.releaseBrokerSession();
+          requireActive();
         }
       }
+      requireActive();
       await this.launch(bin, localPort, null);
+      requireActive();
       this.setState("running");
     } catch (err) {
-      const requested = this.stopRequested;
+      const requested = cancelled();
+      const failedGeneration = this.startGeneration;
       await this.stop().catch(() => undefined);
-      if (!requested) {
+      if (!requested && this.startGeneration === failedGeneration + 1) {
         this.setState("error", err instanceof Error ? err.message : String(err));
       }
     }
@@ -393,7 +433,7 @@ export class QuickTunnel {
   }
 
   async stop(): Promise<void> {
-    this.stopRequested = true;
+    this.startGeneration++;
     this.url = "";
     this.mode = "";
     await this.killChild();

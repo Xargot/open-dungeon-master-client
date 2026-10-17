@@ -79,6 +79,14 @@ public final class WorldRuntime {
     private volatile String error = "";
     /** The LAN address for the current run; computed once the world is up. */
     private volatile String lanOrigin = "";
+    /**
+     * Whether friends on the same Wi-Fi can reach the world. Off at every
+     * app start, as on the desktop: the world answers on the phone alone
+     * until the player shares it on the Wi-Fi (setLanSharing).
+     */
+    private volatile boolean sharedOnLan;
+    /** Set while setLanSharing restarts the world, whose stop must not read as the world going away. */
+    private volatile boolean restarting;
     private volatile WorldEventListener listener;
     /** The payload description never changes while the app runs, so it is read once. */
     private volatile boolean bundledLoaded;
@@ -204,6 +212,42 @@ public final class WorldRuntime {
         return again;
     }
 
+    /**
+     * Shares the world on the Wi-Fi, or stops. The server picks its address
+     * when it boots, so a running world starts again on the same port
+     * (pickPort keeps it) and a share tunnel to 127.0.0.1 carries on; an
+     * open page's stream reconnects by itself. Turning it on with no Wi-Fi
+     * address is refused before anything restarts. Holds the start monitor,
+     * like repair(), so no other start runs in between.
+     */
+    public synchronized void setLanSharing(boolean on) throws IOException {
+        if (sharedOnLan == on) return;
+        String before = state;
+        boolean up = "running".equals(before) || "starting".equals(before);
+        if (on && WorldEnvironment.lanOrigin(up && port > 0 ? port : DEFAULT_PORT).isEmpty()) {
+            throw new IOException("This phone is not on a Wi-Fi network right now.");
+        }
+        sharedOnLan = on;
+        if (!up) return;
+        // The bridge ends an online share when the world reports "stopped";
+        // this stop is only the way to the new address, so it stays quiet.
+        // A world that does not come back is reported like one that died.
+        restarting = true;
+        try {
+            stop();
+            start();
+        } catch (IOException e) {
+            emit("error", e.getMessage() != null ? e.getMessage() : "The world did not come back up.");
+            throw e;
+        } finally {
+            restarting = false;
+        }
+    }
+
+    public boolean sharedOnLan() {
+        return sharedOnLan;
+    }
+
     private static JSONObject payloadFacts(JSONObject info) throws JSONException {
         return new JSONObject()
                 .put("serverVersion", info.optString("serverVersion", ""))
@@ -261,9 +305,9 @@ public final class WorldRuntime {
         return current > 0 ? "http://127.0.0.1:" + current : "";
     }
 
-    /** The address friends on the same network use; empty when there is no Wi-Fi address. */
+    /** The address friends on the same network use; empty unless shared on the Wi-Fi and there is a Wi-Fi address. */
     public String lanOrigin() {
-        if (!"running".equals(state)) return "";
+        if (!sharedOnLan || !"running".equals(state)) return "";
         String cached = lanOrigin;
         if (cached.isEmpty()) {
             // Wi-Fi may come up after the start; look again only while nothing is cached.
@@ -273,10 +317,10 @@ public final class WorldRuntime {
         return cached;
     }
 
-    // The code the world's first account must send. The server listens on
-    // the Wi-Fi before the host has typed a name, and whoever registers
-    // first becomes the world's admin; only this app can work the code out,
-    // so only it can. Derived from the database key rather than stored, so
+    // The code the world's first account must send. A world shared on the
+    // Wi-Fi before the host has typed a name could be reached by anyone
+    // there, and whoever registers first becomes the world's admin; only
+    // this app can work the code out, so only it can. Derived from the database key rather than stored, so
     // it is the same in a new app process around a server still running.
     static String setupCodeFor(String dbKey) {
         try {
@@ -311,6 +355,7 @@ public final class WorldRuntime {
             json.put("state", ok ? current : "unavailable");
             json.put("origin", running ? origin() : "");
             json.put("lanOrigin", running ? lanOrigin() : "");
+            json.put("sharedOnLan", sharedOnLan);
             json.put("firstRun", !dbFile().exists());
             json.put("setupCode", running ? setupCode() : "");
             json.put("serverVersion", info != null ? info.optString("serverVersion", "") : "");
@@ -366,7 +411,7 @@ public final class WorldRuntime {
                 if (stopRequested) throw new StoppedException();
                 watch(child);
                 if (waitHealthy(child)) {
-                    String lan = WorldEnvironment.lanOrigin(candidate);
+                    String lan = sharedOnLan ? WorldEnvironment.lanOrigin(candidate) : "";
                     synchronized (stateLock) {
                         if (stopRequested) throw new StoppedException();
                         lanOrigin = lan;
@@ -420,10 +465,9 @@ public final class WorldRuntime {
         Map<String, String> env = builder.environment();
         env.put("NODE_ENV", "production");
         env.put("PORT", String.valueOf(listenPort));
-        // Listens on every interface so friends on the same Wi-Fi can join.
-        // Binding 127.0.0.1 until LAN or tunnel sharing begins would be
-        // tighter; that change waits on Kaleb's call (plan item A10).
-        env.put("HOSTNAME", "0.0.0.0");
+        // The phone alone until the player shares the world on the Wi-Fi;
+        // the share tunnel reaches it on 127.0.0.1 either way.
+        env.put("HOSTNAME", sharedOnLan ? "0.0.0.0" : "127.0.0.1");
         env.put("SQLITE_DB_PATH", dbFile().getAbsolutePath());
         env.put("DB_ENCRYPTION_KEY", dbKey);
         env.put("ODM_SQLITE_DRIVER", "node");
@@ -534,7 +578,7 @@ public final class WorldRuntime {
             state = "stopped";
             error = "";
         }
-        if (child != null || !"stopped".equals(before)) emit("stopped", "");
+        if (!restarting && (child != null || !"stopped".equals(before))) emit("stopped", "");
     }
 
     public String tailLog(int maxBytes) {

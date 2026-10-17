@@ -1,5 +1,6 @@
 import { registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 import type {
+  AiModelsResult,
   AiSetup,
   ConnectResult,
   LocalStatus,
@@ -8,7 +9,15 @@ import type {
   SavedAi,
   ShellEvent,
 } from "../../src/shared/types";
-import { NO_SAVED_AI, openAiPatch, savedAiFrom } from "../../src/shared/ai-setup";
+import {
+  NO_SAVED_AI,
+  STORY_MODELS_PATH,
+  saveOpenAiDoor,
+  currentAiSummary,
+  savedAiFrom,
+  storyModelsFrom,
+  storyModelsRequest,
+} from "../../src/shared/ai-setup";
 import {
   commitWorldImport,
   discardWorldTransfer,
@@ -36,6 +45,8 @@ export interface WorldStatus {
   // works it out and hands it to the server). Absent on an older native
   // side, whose worlds do not ask for one.
   setupCode?: string;
+  // Whether the world answers on the Wi-Fi (WorldRuntime.setLanSharing).
+  sharedOnLan?: boolean;
 }
 
 // What the native side reports on its own (LocalWorldPlugin's worldEvent):
@@ -70,6 +81,9 @@ export interface LocalWorldPlugin {
   // world started again when it was awake or had failed; and the facts for
   // the summary. Absent on an older native side.
   repair?(): Promise<WorldStatus & { started: boolean }>;
+  // Sharing on the Wi-Fi (WorldRuntime.setLanSharing): a running world
+  // restarts on the same port. Absent on an older native side.
+  lanSharing?(options: { on: boolean }): Promise<WorldStatus>;
   diagnostics?(): Promise<WorldDiagnostics>;
   // Moving the world (LocalWorldPlugin.java): copy a picked archive beside
   // the world's database ({ name: "" } when the picker is closed), or copy a
@@ -130,6 +144,9 @@ export interface LocalWorldDeps {
   tokenIsValid(origin: string, token: string): Promise<boolean>;
   patchAdminSettings(origin: string, token: string, patch: object): Promise<void>;
   getAdminSettings(origin: string, token: string): Promise<unknown>;
+  // One of the world's admin routes that takes and answers JSON (the model
+  // listings the OpenAI door asks); a refusal throws.
+  postAdmin(origin: string, token: string, path: string, body: object): Promise<unknown>;
   // Plants the session and opens the world's pages in the game webview.
   open(origin: string, token: string, joinCode: string, path: string): Promise<void>;
   // Plants the session alone. The bridge's own requests share the webview's
@@ -328,23 +345,39 @@ export function createLocalWorld(deps: LocalWorldDeps) {
     }
   }
 
-  async function configureAi(setup: AiSetup): Promise<Result> {
+  async function configureAi(setup: AiSetup): Promise<Result<{ notice?: string }>> {
     try {
       const origin = await start();
       const profile = await liveToken(origin);
       if (!profile) return fail(new Error("Set up your profile first."));
+      const token = profile.token;
       if (setup.choice === "human") {
-        await deps.patchAdminSettings(origin, profile.token, { text: { provider: "none" } });
+        await deps.patchAdminSettings(origin, token, { text: { provider: "none" } });
         return { ok: true };
       }
       if (setup.choice !== "openai") return { ok: true };
-      const saved = savedAiFrom(
-        await deps.getAdminSettings(origin, profile.token).catch(() => null),
-      );
-      const built = openAiPatch(setup, saved);
-      if ("error" in built) return fail(new Error(built.error));
-      await deps.patchAdminSettings(origin, profile.token, built.patch);
-      return { ok: true };
+      // The key and the storyteller, then the picture and transcription
+      // models from the key's own list, as the desktop shell saves them.
+      const saved = await saveOpenAiDoor(setup, {
+        settings: () => deps.getAdminSettings(origin, token),
+        patch: (patch) => deps.patchAdminSettings(origin, token, patch),
+        post: (path, body) => deps.postAdmin(origin, token, path, body),
+      });
+      if ("error" in saved) return fail(new Error(saved.error));
+      return { ok: true, ...(saved.notice ? { notice: saved.notice } : {}) };
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
+  // The storyteller models the OpenAI key lists, for the form's model
+  // fields: the typed key, or the device's saved one when none is typed.
+  async function aiModels(apiKey: string): Promise<AiModelsResult> {
+    try {
+      const origin = await start();
+      const profile = await liveToken(origin);
+      if (!profile) return fail(new Error("Set up your profile first."));
+      return storyModelsFrom(await deps.postAdmin(origin, profile.token, STORY_MODELS_PATH, storyModelsRequest(apiKey)));
     } catch (err) {
       return fail(err);
     }
@@ -357,7 +390,9 @@ export function createLocalWorld(deps: LocalWorldDeps) {
       const origin = await start();
       const profile = await liveToken(origin);
       if (!profile) return NO_SAVED_AI;
-      return savedAiFrom(await deps.getAdminSettings(origin, profile.token));
+      const settings = await deps.getAdminSettings(origin, profile.token);
+      const summary = currentAiSummary(settings);
+      return summary ? { ...savedAiFrom(settings), summary } : savedAiFrom(settings);
     } catch {
       return NO_SAVED_AI;
     }
@@ -503,6 +538,23 @@ export function createLocalWorld(deps: LocalWorldDeps) {
     }
   }
 
+  // Wi-Fi sharing, as on the desktop (src/main/ipc.ts setLanSharing): the
+  // world answers on the phone alone until the player shares it on the
+  // Wi-Fi. In-game invites follow the address (publish).
+  async function setLanSharing(on: boolean): Promise<Result<{ status: LocalStatus }>> {
+    const plugin = deps.plugin;
+    if (!plugin.lanSharing) return fail(new Error("This version of the app cannot share on the Wi-Fi."));
+    try {
+      await plugin.lanSharing({ on });
+      await publish(deps.currentShareUrl?.() ?? "");
+      return { ok: true, status: await status() };
+    } catch (err) {
+      return fail(err);
+    } finally {
+      await announce();
+    }
+  }
+
   async function diagnostics(): Promise<WorldDiagnostics | null> {
     const plugin = deps.plugin;
     if (!plugin.diagnostics) return null;
@@ -517,6 +569,7 @@ export function createLocalWorld(deps: LocalWorldDeps) {
     login,
     configureAi,
     aiSaved,
+    aiModels,
     stop,
     publish,
     watch,
@@ -525,6 +578,7 @@ export function createLocalWorld(deps: LocalWorldDeps) {
     importCommit,
     importCancel,
     repair,
+    setLanSharing,
     diagnostics,
   };
 }

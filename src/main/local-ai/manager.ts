@@ -47,6 +47,7 @@ export class LocalAiManager {
   private progress: LocalAiStatus["progress"] = null;
   private error = "";
   private externalServer = false;
+  private ready = false;
   private hardware: HardwareInfo | null = null;
   private readonly listeners = new Set<() => void>();
   readonly comfy: ComfyManager;
@@ -110,7 +111,7 @@ export class LocalAiManager {
       installedTierId: state?.tierId ?? "",
       installedLabel: state ? (catalogEntry(state.tierId)?.label ?? "") : "",
       utilityInstalled: Boolean(state?.utilityFile),
-      running: this.externalServer || (this.child !== null && this.child.exitCode === null),
+      running: this.externalServer || (this.ready && this.child !== null && this.child.exitCode === null),
       busy: this.busy,
       progress: this.progress,
       error: this.error,
@@ -248,7 +249,7 @@ export class LocalAiManager {
   private async portInUse(): Promise<boolean> {
     try {
       const response = await fetch(`${ORIGIN}/health`, { signal: AbortSignal.timeout(1500) });
-      return response.status > 0;
+      return response.ok;
     } catch {
       return false;
     }
@@ -261,6 +262,7 @@ export class LocalAiManager {
       // Someone already runs an AI server here (a hand-managed llama-server,
       // Ollama behind a proxy). Theirs wins; nothing to manage.
       this.externalServer = true;
+      this.error = "";
       return;
     }
     const entry = catalogEntry(state.tierId);
@@ -301,22 +303,53 @@ export class LocalAiManager {
           },
         },
       );
-      fs.closeSync(log);
       this.child = child;
+      this.ready = false;
+      let launchFailed = false;
+      const launchFailure = new Promise<never>((_resolve, reject) => {
+        child.once("error", (err) => {
+          launchFailed = true;
+          if (this.child === child) {
+            this.child = null;
+            this.error = `The local AI server could not start: ${err.message}`;
+            this.emit();
+          }
+          reject(new Error(`The local AI server could not start: ${err.message}`));
+        });
+      });
       child.once("exit", () => {
         if (this.child === child) {
           this.child = null;
+          this.ready = false;
           this.error = "The local AI server stopped (see llama-server.log).";
           this.emit();
         }
       });
+      fs.closeSync(log);
       // Wait for the server process, not the model: the model loads in the
       // background and the first request simply waits for it.
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline && child.exitCode === null) {
-        if (await this.portInUse()) break;
-        await new Promise((resolve) => setTimeout(resolve, 500));
+      // Running means answering (#40), and a program that cannot be
+      // launched at all emits error and never exit (#37): either ends the
+      // wait.
+      const healthy = await Promise.race([launchFailure, (async () => {
+        const deadline = Date.now() + 30_000;
+        while (Date.now() < deadline && child.exitCode === null && !launchFailed) {
+          if (await this.portInUse()) return true;
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+        return false;
+      })()]);
+      if (!healthy || this.child !== child || child.exitCode !== null) {
+        throw new Error(child.exitCode === null
+          ? "The local AI server did not become healthy in time (see llama-server.log)."
+          : "The local AI server exited during startup (see llama-server.log).");
       }
+      this.ready = true;
+      this.error = "";
+    } catch (err) {
+      await this.stopServer();
+      this.error = err instanceof Error ? err.message : String(err);
+      throw err;
     } finally {
       this.busy = "";
       this.emit();
@@ -329,14 +362,19 @@ export class LocalAiManager {
     const child = this.child;
     this.child = null;
     this.externalServer = false;
+    this.ready = false;
     if (child && child.exitCode === null) {
-      child.kill("SIGTERM");
       await new Promise<void>((resolve) => {
-        const killer = setTimeout(() => child.kill("SIGKILL"), 8000);
-        child.once("exit", () => {
+        const done = (): void => {
           clearTimeout(killer);
+          child.off("exit", done);
+          child.off("error", done);
           resolve();
-        });
+        };
+        child.once("exit", done);
+        child.once("error", done);
+        const killer = setTimeout(() => { child.kill("SIGKILL"); done(); }, 8000);
+        child.kill("SIGTERM");
       });
     }
   }

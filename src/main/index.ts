@@ -184,7 +184,11 @@ function main(): void {
         platform: process.platform,
         arch: process.arch,
         execPath: process.execPath,
-        appImagePath: process.env.APPIMAGE ?? "",
+        // Read when an update installs: Add to Steam may have renamed the
+        // AppImage since start (src/main/steam-shortcut.ts).
+        get appImagePath() {
+          return process.env.APPIMAGE ?? "";
+        },
         downloadsDir: () => app.getPath("downloads"),
         open: async (file) => {
           const failure = await shell.openPath(file);
@@ -253,33 +257,51 @@ function main(): void {
     // lost, and the player never saw the popup.
     updater.checkOnStartup(win.whenPageReady());
 
-    // Leaving takes the share down properly: the tunnel, then the room
-    // codes in the registry and the world's publicUrl (capped, so a broker
-    // that does not answer cannot hold the app open), then the rest. Quit
-    // is deferred once for that and then allowed through.
-    let leaving = false;
-    const shutdown = async (): Promise<void> => {
-      if (leaving) return;
-      leaving = true;
-      const cap = new Promise<void>((resolve) => setTimeout(resolve, 3000));
-      await Promise.race([ipc?.shutdownShare() ?? Promise.resolve(), cap]);
-      await Promise.race([
-        localAi
-          .stop()
-          .catch(() => undefined)
-          .then(() => local.stop())
-          .catch(() => undefined),
-        cap,
-      ]);
+    // AI cleanup starts immediately. Keep the local server available for
+    // sharing cleanup, but attempt its stop by the same total deadline.
+    let shutdownPromise: Promise<void> | null = null;
+    let quitQueued = false;
+    let allowQuit = false;
+    const shutdown = (): Promise<void> => {
+      if (shutdownPromise) return shutdownPromise;
+      shutdownPromise = (async () => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const cap = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 3000);
+        });
+        const settle = (operation: () => Promise<unknown>): Promise<void> => {
+          try {
+            return Promise.resolve(operation()).then(() => undefined, () => undefined);
+          } catch {
+            return Promise.resolve();
+          }
+        };
+        const share = settle(() => ipc?.shutdownShare() ?? Promise.resolve());
+        const ai = settle(() => localAi.stop());
+        try {
+          await Promise.race([share, cap]);
+          const localStop = settle(() => local.stop());
+          await Promise.race([Promise.all([share, ai, localStop]), cap]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      })();
+      return shutdownPromise;
+    };
+    const requestQuit = (): void => {
+      if (quitQueued) return;
+      quitQueued = true;
+      void shutdown().finally(() => {
+        allowQuit = true;
+        app.quit();
+      });
     };
     app.on("before-quit", (event) => {
-      if (leaving) return;
+      if (allowQuit) return;
       event.preventDefault();
-      void shutdown().finally(() => app.quit());
+      requestQuit();
     });
-    app.on("window-all-closed", () => {
-      void shutdown().finally(() => app.quit());
-    });
+    app.on("window-all-closed", requestQuit);
 
     await win.whenPageReady();
     if (pendingJoin) {

@@ -225,6 +225,25 @@ export async function releaseAssetDigest(fetchImpl: typeof fetch, version: strin
   return match[1]!;
 }
 
+// Whether a release lists a file of this name. The flatpak job is best
+// effort (release.yml), so a release can go out without its bundle; an
+// install that updates from that file is not told about a version it could
+// not install. A listing GitHub would not give says yes, and leaves the
+// download to say what is wrong.
+export async function releaseHasAsset(fetchImpl: typeof fetch, version: string, asset: string): Promise<boolean> {
+  try {
+    const res = await fetchImpl(`https://api.github.com/repos/${REPO}/releases/tags/v${version}`, {
+      headers: { Accept: "application/vnd.github+json", "User-Agent": "open-dungeon-master-client" },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) return true;
+    const body = (await res.json()) as { assets?: { name?: unknown }[] };
+    return !Array.isArray(body.assets) || body.assets.some((entry) => entry?.name === asset);
+  } catch {
+    return true;
+  }
+}
+
 // A package bigger than this is not one of ours.
 const MAX_PACKAGE_BYTES = 1024 * 1024 * 1024;
 // A download that sends nothing for this long is given up.
@@ -261,6 +280,13 @@ async function moveFile(from: string, to: string): Promise<void> {
   }
 }
 
+// Does an AppImage's file name carry a version? Such a file gives way to the
+// next version's file on update; any other name is kept (and so is a Steam
+// shortcut to it, src/main/steam-shortcut.ts).
+export function versionedAppImageName(name: string): boolean {
+  return /\d+\.\d+\.\d+/.test(name);
+}
+
 // The new AppImage takes the old one's place. Same rule as electron-updater:
 // a file the player renamed (no version in its name) keeps its name, a
 // versioned one is replaced by the new versioned file. The running AppImage
@@ -269,7 +295,7 @@ export async function replaceAppImage(current: string, downloaded: string): Prom
   const pathModule = await import("node:path");
   const { chmod, rm } = await import("node:fs/promises");
   const currentName = pathModule.basename(current);
-  const keepName = pathModule.basename(downloaded) === currentName || !/\d+\.\d+\.\d+/.test(currentName);
+  const keepName = pathModule.basename(downloaded) === currentName || !versionedAppImageName(currentName);
   const destination = keepName ? current : pathModule.join(pathModule.dirname(current), pathModule.basename(downloaded));
   await moveFile(downloaded, destination);
   await chmod(destination, 0o755);
@@ -359,9 +385,17 @@ export class Updater {
   }
 
   // What GitHub says is newest, compared against this build.
-  private async checkGitHub(): Promise<UpdateStatus> {
+  // An install that updates from a release file is only offered a version
+  // whose release has that file (releaseHasAsset); the download itself
+  // skips that ask, since its checksum lookup refuses a missing file anyway.
+  private async checkGitHub(askForAsset = true): Promise<UpdateStatus> {
     const latest = await this.fetchLatest();
-    return this.statusOf(latest, Boolean(latest) && isNewerVersion(latest, this.currentVersion));
+    const newer = Boolean(latest) && isNewerVersion(latest, this.currentVersion);
+    const asset = newer && askForAsset ? this.assetFor(latest) : "";
+    if (asset && this.host && !(await releaseHasAsset(this.host.fetchImpl ?? fetch, latest, asset))) {
+      return this.statusOf(this.currentVersion, false);
+    }
+    return this.statusOf(latest, newer);
   }
 
   async checkForUpdates(): Promise<UpdateStatus> {
@@ -675,7 +709,7 @@ export class Updater {
   // whatever this install method needs to make it the running app.
   private async downloadPackage(): Promise<void> {
     const host = this.host;
-    const status = await this.checkGitHub();
+    const status = await this.checkGitHub(false);
     const asset = status.available ? this.assetFor(status.latest) : "";
     if (!host || !asset) {
       throw new Error(status.available ? INSTRUCTIONS[this.kind] || "This install cannot update itself." : "You already have the latest version.");

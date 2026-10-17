@@ -17,6 +17,10 @@ extraResources:
   # platform icons below are derived from the same file by electron-builder.
   - from: build/icon.png
     to: icon.png
+  # The Steam library artwork Add to Steam copies into Steam's grid folder
+  # (src/main/steam-shortcut.ts), rendered by scripts/make-steam-art.cjs.
+  - from: build/steam
+    to: steam
 asar: true
 # One 1024px source, rendered from build/icon.svg by scripts/make-icons.mjs;
 # electron-builder converts it to .icns and .ico itself.
@@ -58,7 +62,10 @@ flatpak:
   # would be narrower, but the flatpak 1.14 that builds this on Ubuntu
   # 24.04 does not know it. org.freedesktop.Flatpak lets the in-app updater
   # install the next bundle with `flatpak-spawn --host flatpak install` and
-  # start it again from the host.
+  # start it again from the host. --filesystem=home stays: downloads land
+  # in ~/Downloads directly (src/main/index.ts), world exports default to
+  # Documents, and an agent program the player installed under their home
+  # (Claude Code, Codex) only runs inside the sandbox through it.
   finishArgs:
     - --socket=wayland
     - --socket=x11

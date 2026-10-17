@@ -79,11 +79,31 @@ export function pickContinueCampaign(feed: HomeFeed): ContinuePick | null {
 // Where "New campaign", "Characters" and "Workshop" go: the hero's host,
 // else the device world when this build has one, else the first online
 // server (the feed lists hosts most recently used first).
-export function pickPrimaryHost(feed: HomeFeed, hero: ContinuePick | null): HomeHost | null {
+export function pickPrimaryHost(feed: HomeFeed, hero: ContinuePick | null, preferredId = ""): HomeHost | null {
+  // The player said where new tables go ("Opens on ... Change"): kept while
+  // that host can still be reached.
+  const preferred = preferredId ? creationHosts(feed).find((host) => host.id === preferredId) : undefined;
+  if (preferred) return preferred;
   if (hero) return hero.host;
   const local = feed.hosts.find((host) => host.kind === "local");
   if (local && local.status !== "unavailable") return local;
   return feed.hosts.find((host) => host.kind !== "local" && host.status === "online") ?? null;
+}
+
+// The hosts New campaign, Characters and Workshop can open on: the device
+// world while this build has one, and every remote host that answers. The
+// home names the one in use and offers the next.
+export function creationHosts(feed: HomeFeed): HomeHost[] {
+  return feed.hosts.filter((host) =>
+    host.kind === "local" ? host.status !== "unavailable" : host.status === "online",
+  );
+}
+
+export function nextCreationHost(feed: HomeFeed, current: HomeHost | null): HomeHost | null {
+  const hosts = creationHosts(feed);
+  if (hosts.length < 2) return null;
+  const at = current ? hosts.findIndex((host) => host.id === current.id) : -1;
+  return hosts[(at + 1) % hosts.length] ?? null;
 }
 
 export function campaignLine(campaign: HomeCampaign): string {

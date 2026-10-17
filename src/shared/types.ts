@@ -98,10 +98,20 @@ export interface AiSetup {
   // "harness": an agent program already installed and signed in on this
   // computer (Claude Code, Codex, opencode, Grok Build) narrates instead.
   harness?: { id: HarnessId; model: string; utilityModel: string };
-  // The provider's paid Fast tier (server issue 255), for the models that
-  // have one; the server asks for it only where the model does.
+  // The provider's paid Fast tier (server issue 255), for the storyteller.
+  // On OpenAI the server asks for it for any named model, at the premium
+  // price, so each role is chosen on its own: utilityFast is the utility
+  // model's.
   fast?: boolean;
+  utilityFast?: boolean;
+  // The OpenAI door: read the story aloud with OpenAI's voices too, on the
+  // same key (the narration model from the key's own list).
+  narrate?: boolean;
 }
+
+// The storyteller models an OpenAI key lists, as the device world's server
+// reads them (its guided setup's listing), with the catalog's pick.
+export type AiModelsResult = Result<{ models: Array<{ id: string; label: string }>; recommended: string }>;
 
 export type HarnessId = "claude" | "codex" | "opencode" | "grok";
 
@@ -138,8 +148,12 @@ export interface SavedAi {
   utilityModel: string;
   // Set when the device narrates with an agent program.
   harnessId?: string;
-  // The storyteller runs at the provider's Fast tier.
+  // The storyteller runs at the provider's Fast tier, and the utility model.
   fast?: boolean;
+  utilityFast?: boolean;
+  // What the device world uses now, in words, for the top of Story AI
+  // (currentAiSummary in ai-setup.ts). Older shells ignore it.
+  summary?: { story: string; pictures: string; narration: string };
 }
 
 // firstSetup: the shell just auto-provisioned the local profile, so the
@@ -149,6 +163,10 @@ export interface SavedAi {
 export type ConnectResult =
   | { ok: true; firstSetup?: boolean; needsName?: boolean }
   | { ok: false; needsLogin: boolean; error: string };
+
+export type NativeRemotePreparation =
+  | { ok: true; session: { origin: string; token: string }; version: string }
+  | { ok: false; needsLogin: boolean; error: string; origin: string };
 
 // A tunnel sharing the local world at a public https address. "named" means
 // a broker-issued play-CODE address; "quick" is the trycloudflare fallback.
@@ -183,6 +201,9 @@ export interface HardwareInfo {
   gpuName: string;
   // Which GPU stack to install compute for; "" when no signal was found.
   gpuVendor: "" | "nvidia" | "amd" | "apple";
+  // An NVIDIA card's compute capability (8.9 for an RTX 4090, 12.0 for an
+  // RTX 5090), which picks the CUDA build of torch. Absent when unknown.
+  gpuCompute?: number;
   unifiedMemory: boolean;
 }
 
@@ -256,7 +277,19 @@ export interface AppInfo {
   // The reset this start carried out (src/main/reset.ts): where the
   // previous data went, and what could not be moved. Desktop only.
   reset?: { aside: string; left: string[] } | null;
+  // A Linux install Steam is there to take as a non-Steam game
+  // (src/main/steam-shortcut.ts). Desktop only.
+  addToSteam?: boolean;
 }
+
+// Adding the app to Steam. "needs-restart": Steam is open and would write
+// its old list back on the way out, so nothing was changed; the same call
+// with restart true closes Steam, adds the app and opens Steam again.
+// moved: where an AppImage went to keep one name through updates.
+export type SteamAddResult =
+  | { ok: true; state: "added" | "updated"; persona: string; restarted: boolean; moved: string }
+  | { ok: true; state: "needs-restart" }
+  | { ok: false; error: string };
 
 export interface UpdateStatus {
   current: string;
@@ -365,6 +398,10 @@ export interface HomeHost {
   // host policy (its campaign list says so; older servers do not, and are
   // taken as open).
   canCreate: boolean;
+  // Whether that server has an AI storyteller: Quick start is an AI-run
+  // adventure, offered only where one can run it (older servers do not
+  // say, and are taken to have one).
+  offersStory: boolean;
 }
 
 // refreshedAt is "" for a feed served from the cache before any refresh.
@@ -448,6 +485,8 @@ export interface OdmBridge {
   // instead of the root; a join code takes precedence. Sanitized in
   // src/shared/open-path.ts before it touches a URL.
   connect(serverId: string, joinCode?: string, path?: string): Promise<ConnectResult>;
+  // Desktop validates remote identity and session before opening native screens.
+  prepareRemote?(serverId: string, joinCode?: string): Promise<NativeRemotePreparation>;
   // Android only: the back gesture on the home screen leaves the app.
   leaveApp?(): Promise<void>;
   // Feeds a pasted invite link (odm:// or the https /j shape) or a bare
@@ -507,11 +546,19 @@ export interface OdmBridge {
     password: string;
   }): Promise<Result<{ status: LocalStatus }>>;
   localLogin(input: { username: string; password: string }): Promise<Result<{ status: LocalStatus }>>;
-  localConfigureAi(setup: AiSetup): Promise<Result>;
+  // notice: what the player still has to pick, and where, once the key is
+  // saved (a picture or transcription model the key's list does not settle).
+  localConfigureAi(setup: AiSetup): Promise<Result<{ notice?: string }>>;
   localAiSaved(): Promise<SavedAi>;
+  // The storyteller models the key lists ("" for the one already saved).
+  localAiModels(apiKey: string): Promise<AiModelsResult>;
   // The agent programs the device world's server can start. Desktop only;
   // the phone answers that there is no such thing on a phone.
   localHarnessStatus(refresh?: boolean): Promise<HarnessStatusResult>;
+  // The saved agent paints one test map the way a table asks for one and,
+  // when it comes back, becomes the device world's painter (the server's
+  // POST /api/admin/harness picture then adopt). Desktop only.
+  localHarnessPictures?(): Promise<{ ok: true; image: string; moved: number } | { ok: false; error: string }>;
   localPlay(joinCode?: string, path?: string): Promise<ConnectResult>;
   shareStart(): Promise<Result<{ tunnel: TunnelStatus }>>;
   shareStop(): Promise<Result<{ tunnel: TunnelStatus }>>;
@@ -525,7 +572,7 @@ export interface OdmBridge {
   // settings to it failed and needs a hand.
   localAiInstall(tierId: string): Promise<Result<{ status: LocalAiStatus; warning: string }>>;
   localAiInstallComfy(): Promise<Result<{ status: LocalAiStatus; warning: string }>>;
-  localAiUninstall(component: "text" | "images"): Promise<Result<{ status: LocalAiStatus }>>;
+  localAiUninstall(component: "text" | "images"): Promise<Result<{ status: LocalAiStatus; warning?: string }>>;
   localAiStatus(): Promise<LocalAiStatus>;
   // Speech-to-text for dictation in the device world. Desktop only: the
   // phone dictates with its own recognizer, so it leaves these out.
@@ -563,6 +610,13 @@ export interface OdmBridge {
   // Steam's on-screen keyboard over a text field (field in CSS pixels of
   // this window), or put away. A no-op unless Steam runs the session.
   steamKeyboard?(open: boolean, field?: FieldRect, multiline?: boolean): Promise<void>;
+  // This install into the Steam library as a non-Steam game, with its
+  // artwork (Settings, Steam Deck and controllers). Desktop only.
+  addToSteam?(restart: boolean): Promise<SteamAddResult>;
+  // The same offered once at first launch, on a Steam Deck in Desktop Mode:
+  // whether to offer it now, and that the player answered.
+  steamOffer?(): Promise<boolean>;
+  answerSteamOffer?(): Promise<void>;
   updateCheck(): Promise<Result<{ update: UpdateStatus }>>;
   updateInstall(): Promise<Result>;
   onEvent(listener: (event: ShellEvent) => void): void;

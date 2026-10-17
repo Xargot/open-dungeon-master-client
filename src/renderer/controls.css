@@ -419,3 +419,107 @@ select:where(:not(.game-root *)):focus {
 @media (prefers-reduced-motion: reduce) {
   .update-popup-scrim, .update-popup { animation: none; }
 }
+
+/* ---- Story AI (local-ai.ts, harness-ai.ts): optional tuning folded away,
+   the read-aloud tick, a painter test that waits without a figure, and the
+   picture it brought back. Shell-only, so never inside .game-root. ---- */
+details.tuning:where(:not(.game-root *)) {
+  margin-top: 0.85rem;
+  border: 1px solid rgba(212, 171, 58, 0.22);
+  border-radius: 10px;
+  padding: 0.35rem 0.75rem;
+  background: rgba(10, 8, 22, 0.35);
+}
+details.tuning:where(:not(.game-root *)) > summary {
+  cursor: pointer;
+  padding: 0.3rem 0;
+  font-size: 0.85rem;
+  color: var(--ink-300);
+  list-style: none;
+}
+details.tuning:where(:not(.game-root *)) > summary::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 0.55rem;
+  vertical-align: 2px;
+  rotate: 45deg;
+  border: 1px solid var(--gold-500);
+  transition: rotate var(--dur-move, 220ms) var(--ease-snap, ease), background-color 160ms ease;
+}
+details.tuning[open]:where(:not(.game-root *)) > summary::before { rotate: 225deg; background: var(--gold-500); }
+details.tuning[open]:where(:not(.game-root *)) > :not(summary) { animation: fade-up 260ms var(--ease-snap, ease) both; }
+.check-row:where(:not(.game-root *)) {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin-top: 0.85rem;
+  font-size: 0.88rem;
+  color: var(--ink-300);
+  cursor: pointer;
+}
+.check-row:where(:not(.game-root *)) > input { margin-top: 0.2rem; accent-color: var(--gold-500); width: 1rem; height: 1rem; }
+.progress.indeterminate:where(:not(.game-root *)) .progress-fill {
+  width: 35% !important;
+  animation: progress-sweep 1.6s var(--ease-drift, ease-in-out) infinite;
+}
+@keyframes progress-sweep {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(310%); }
+}
+.agent-test-picture:where(:not(.game-root *)) {
+  display: block;
+  width: 100%;
+  max-height: 46vh;
+  object-fit: contain;
+  margin-bottom: 1rem;
+  border-radius: 10px;
+  border: 1px solid rgba(212, 171, 58, 0.35);
+  animation: fade-up 420ms var(--ease-snap, ease) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  details.tuning:where(:not(.game-root *)) > summary::before { transition: none; }
+  .progress.indeterminate:where(:not(.game-root *)) .progress-fill { animation: none; width: 100% !important; opacity: 0.6; }
+  .agent-test-picture:where(:not(.game-root *)) { animation: none; }
+}
+
+/* ---- App settings (settings.ts): the row of four jobs at the top and each
+   job's heading, in the shell's gold-on-night. ---- */
+.settings-contents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0 0 1rem;
+}
+.settings-jump {
+  min-height: 2.25rem;
+  padding: 0.25rem 0.85rem;
+  border: 1px solid rgba(212, 171, 58, 0.35);
+  border-radius: 999px;
+  font-size: 0.8rem;
+  color: var(--ink-300);
+  background: rgba(10, 8, 22, 0.45);
+  transition: border-color 160ms var(--ease-snap, ease), color 160ms var(--ease-snap, ease), transform 220ms var(--ease-spring, ease);
+}
+.settings-jump:is(:hover, :focus-visible),
+.pad-active .settings-jump:focus { border-color: var(--gold-400); color: var(--gold-300); outline: none; }
+.settings-jump:active { transform: scale(0.97); }
+.settings-group {
+  scroll-margin-top: 1rem;
+  margin: 1.6rem 0 0.75rem;
+}
+.settings-group-title {
+  font-family: var(--font-display);
+  font-size: 1rem !important;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gold-300);
+}
+.settings-group-detail { margin-top: 0.15rem !important; font-size: 0.82rem; color: var(--ink-500); }
+@media (prefers-reduced-motion: reduce) {
+  .settings-jump { transition: none; }
+}
+
+/* The address behind a shared world: said after the room code, quieter. */
+.status-line.quiet { color: var(--ink-500); font-size: 0.8rem; word-break: break-all; }

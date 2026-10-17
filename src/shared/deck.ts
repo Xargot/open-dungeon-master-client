@@ -143,8 +143,13 @@ export const PAD_LEGEND: readonly { control: string; does: string }[] = [
   { control: "B", does: "Back: close a menu or dialog first, then the previous page" },
   { control: "X", does: "At the table, jump to the message box and open the keyboard" },
   { control: "L1 (hold)", does: "Push to talk in voice chat, once Audio and dice has the mic on Push to talk" },
-  { control: "R1 (hold)", does: "Talk to the Dungeon Master: hold, speak, let go, and the words land in the message box" },
+  { control: "R1 (hold)", does: "Talk to the Dungeon Master, once the world has speech to text: hold, speak, let go, and the words land in the message box" },
   { control: "L2, R2 or right stick", does: "Scroll" },
   { control: "Menu", does: "Open the app menu" },
   { control: "View", does: "Open or close App settings" },
 ];
+
+// What R1 says at a table that has a message box and no mic beside it: the
+// server hides its hold-to-talk button when nothing can turn speech into
+// text (no Whisper, no built-in engine, no phone recognizer).
+export const NO_TALK_NOTICE = "This world has no speech to text yet. An admin can install it under Admin > Speech.";

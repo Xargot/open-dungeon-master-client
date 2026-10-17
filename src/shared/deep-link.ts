@@ -242,7 +242,12 @@ export function parseAnyLink(raw: string): JoinLink | null {
   const joined = /^\/join\/([^/]+)\/?$/.exec(url.pathname);
   if (!joined) return null;
   const origin = normalizeOrigin(url.href);
-  const code = decodeURIComponent(joined[1] ?? "").trim().toUpperCase();
+  let code: string;
+  try {
+    code = decodeURIComponent(joined[1] ?? "").trim().toUpperCase();
+  } catch {
+    return null;
+  }
   if (!origin || !CODE_SHAPE.test(code)) return null;
   return { origin, code };
 }

@@ -103,6 +103,26 @@ export function localPlayAt(joinCode: string | undefined, path: string): Promise
 
 const HIDE_OFFLINE_KEY = "odm.home.hideOffline";
 
+// Where the home's New campaign, Characters and Workshop open, when the
+// player chose one ("Opens on ... Change"); "" follows the home's own pick.
+const PRIMARY_HOST_KEY = "odm.primaryHost";
+
+export function preferredHost(): string {
+  try {
+    return localStorage.getItem(PRIMARY_HOST_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setPreferredHost(id: string): void {
+  try {
+    localStorage.setItem(PRIMARY_HOST_KEY, id);
+  } catch {
+    // Kept for this visit only.
+  }
+}
+
 export function hideOffline(): boolean {
   try {
     return localStorage.getItem(HIDE_OFFLINE_KEY) === "1";

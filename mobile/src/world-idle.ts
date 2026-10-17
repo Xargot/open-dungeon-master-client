@@ -7,15 +7,16 @@
 export const IDLE_STOP_GRACE_MS = 30_000;
 
 export interface IdleWorldInput {
-  // The world is shared (tunnel up or coming up): guests may be on it.
+  // The world is shared (tunnel up or coming up, or on the Wi-Fi): guests
+  // may be on it.
   shared: boolean;
   // The app's own screens show the device world right now.
   nativeWorldOpen: boolean;
   // A game web view is open again, for any host.
   webViewOpen: boolean;
   // The web view that closed showed the device world's own pages. The
-  // host may have handed out the Wi-Fi address from there (there is no
-  // switch for that), so their world stays up for those guests.
+  // host may have handed out an address from there, so their world stays
+  // up for those guests.
   ownWorldLeft: boolean;
 }
 

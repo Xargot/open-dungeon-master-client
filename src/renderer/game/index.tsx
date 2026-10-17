@@ -92,7 +92,7 @@ class Boundary extends Component<{ children: ReactNode; onError: (error: unknown
 // under reduced motion and where the API is missing, which leaves the plain
 // swap.
 type ViewTransitionDocument = Document & {
-  startViewTransition?: (callback: () => Promise<void>) => { finished: Promise<void> };
+  startViewTransition?: (callback: () => Promise<void>) => { finished: Promise<void>; ready?: Promise<void> };
 };
 
 function withViewTransition(root: HTMLElement, update: () => void): void {
@@ -120,6 +120,11 @@ function withViewTransition(root: HTMLElement, update: () => void): void {
     root.style.viewTransitionName = "";
   };
   transition.finished.then(unname, unname);
+  // A route change that lands while this one is still fading skips it, and
+  // the browser rejects `ready` with "Transition was skipped": expected, and
+  // not an error (the Workshop's place-in-the-URL navigation does it on a
+  // replace that follows a push).
+  transition.ready?.catch(() => undefined);
 }
 
 function GameApp({ router, root, onLeave }: { router: GameRouter; root: HTMLElement; onLeave: (url: string) => void }) {

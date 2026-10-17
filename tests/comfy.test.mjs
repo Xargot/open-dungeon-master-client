@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   installCommands,
+  parsePythonVersion,
+  pythonCandidates,
+  pythonSupported,
   torchIndexUrl,
   venvPython,
   CHECKPOINT,
@@ -18,6 +21,7 @@ const nvidiaPc = {
   unifiedMemory: false,
 };
 
+const blackwellPc = { ...nvidiaPc, gpuName: "RTX 5090", gpuCompute: 12 };
 const amdLinux = { ...nvidiaPc, gpuName: "Radeon RX 7800 XT", gpuVendor: "amd" };
 const amdWindows = { ...amdLinux, platform: "win32" };
 const cpuOnly = { ...nvidiaPc, vramGb: 0, gpuName: "", gpuVendor: "" };
@@ -32,13 +36,49 @@ const mac = {
 };
 
 test("the torch index follows the GPU vendor", () => {
-  assert.equal(torchIndexUrl(nvidiaPc), "https://download.pytorch.org/whl/cu124");
-  assert.equal(torchIndexUrl(amdLinux), "https://download.pytorch.org/whl/rocm6.2");
+  // cu124 has no torch for Python 3.14, so an install there found nothing.
+  assert.equal(torchIndexUrl({ ...nvidiaPc, gpuCompute: 8.9 }), "https://download.pytorch.org/whl/cu126");
+  // A card whose compute capability is unknown gets the broadest CUDA build.
+  assert.equal(torchIndexUrl(nvidiaPc), "https://download.pytorch.org/whl/cu126");
+  // Blackwell needs CUDA 12.8.
+  assert.equal(torchIndexUrl(blackwellPc), "https://download.pytorch.org/whl/cu128");
+  assert.equal(torchIndexUrl({ ...nvidiaPc, gpuCompute: 10 }), "https://download.pytorch.org/whl/cu128");
+  assert.equal(torchIndexUrl(amdLinux), "https://download.pytorch.org/whl/rocm6.4");
   // No ROCm wheels exist for Windows; an AMD card there runs on CPU torch.
   assert.equal(torchIndexUrl(amdWindows), "https://download.pytorch.org/whl/cpu");
   assert.equal(torchIndexUrl(cpuOnly), "https://download.pytorch.org/whl/cpu");
   // macOS ships MPS in the default PyPI wheels.
   assert.equal(torchIndexUrl(mac), null);
+});
+
+test("only a Python torch has builds for is used", () => {
+  assert.deepEqual(parsePythonVersion("3.14\n"), [3, 14]);
+  assert.deepEqual(parsePythonVersion("Python 3.12.7"), [3, 12]);
+  assert.equal(parsePythonVersion(""), null);
+  assert.ok(pythonSupported([3, 10]));
+  assert.ok(pythonSupported([3, 13]));
+  assert.ok(pythonSupported([3, 14]));
+  assert.ok(!pythonSupported([3, 9]), "macOS's own Python is too old");
+  assert.ok(!pythonSupported([3, 15]));
+  assert.ok(!pythonSupported([2, 7]));
+  assert.ok(!pythonSupported(null));
+});
+
+test("a versioned Python is tried before the bare name", () => {
+  const linux = pythonCandidates("linux").map((c) => [c.bin, ...c.args].join(" "));
+  assert.equal(linux[0], "python3.13");
+  assert.ok(linux.indexOf("python3.12") < linux.indexOf("python3"));
+  assert.deepEqual(linux.slice(-2), ["python3", "python"]);
+  const windows = pythonCandidates("win32").map((c) => [c.bin, ...c.args].join(" "));
+  assert.equal(windows[0], "py -3.13");
+  assert.ok(windows.includes("py -3.10"));
+  assert.deepEqual(windows.slice(-2), ["python", "py"]);
+});
+
+test("the py launcher's version flag reaches the venv command", () => {
+  const venv = installCommands("C:\\r", { bin: "py", args: ["-3.12"] }, { ...nvidiaPc, platform: "win32" })[1];
+  assert.equal(venv.bin, "py");
+  assert.deepEqual(venv.args.slice(0, 3), ["-3.12", "-m", "venv"]);
 });
 
 test("install commands pin the tag and route pip through the venv", {
@@ -57,7 +97,7 @@ test("install commands pin the tag and route pip through the venv", {
   assert.equal(venv.args[1], "venv");
   assert.equal(portable(venv.args[2]), "/root/venv");
   assert.equal(portable(torch.bin), "/root/venv/bin/python");
-  assert.ok(torch.args.join(" ").includes("--index-url https://download.pytorch.org/whl/cu124"));
+  assert.ok(torch.args.join(" ").includes("--index-url https://download.pytorch.org/whl/cu126"));
   assert.equal(portable(reqs.bin), "/root/venv/bin/python");
   assert.ok(portable(reqs.args.join(" ")).endsWith("/root/ComfyUI/requirements.txt"));
 });

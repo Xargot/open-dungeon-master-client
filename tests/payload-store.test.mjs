@@ -170,7 +170,8 @@ test("a swap waits out a lock on the tree, as Windows holds one for a moment", {
       // Renaming the live tree aside needs the parent writable; take that
       // away for the swap's first tries and give it back while it waits.
       fs.chmodSync(dir, 0o500);
-      setTimeout(() => fs.chmodSync(dir, 0o700), 150);
+      // As root the swap never waits, and the world may be cleaned up first.
+      setTimeout(() => fs.existsSync(dir) && fs.chmodSync(dir, 0o700), 150);
     });
     assert.equal(read(path.join(run, "server.js")), "2");
     assert.equal(read(path.join(run, "public/uploads/face.png")), "face");
@@ -191,7 +192,8 @@ test("a replaced tree that cannot be removed yet is left for the next start, not
     await store.recover();
     assert.equal(read(path.join(run, "server.js")), "2", "the live tree is untouched");
     if (!root) assert.ok(fs.existsSync(store.old), "the old tree waits for a start that can remove it");
-    fs.chmodSync(locked, 0o700);
+    // Root removes it anyway, lock and all.
+    if (fs.existsSync(locked)) fs.chmodSync(locked, 0o700);
     await store.recover();
     assert.ok(!fs.existsSync(store.old));
   } finally {

@@ -19,6 +19,17 @@
 #
 # electron-builder publishes to a draft release; the final publish job flips
 # it live once every required artifact is uploaded.
+#
+# Actions are pinned to the commit their major tag named, the same ones
+# ci.yml uses.
+#
+# Before the draft goes live: the Windows installer is installed over the
+# previous release on a clean runner and its world must come back whole
+# (windows-install), and the signed Android APK must start on an emulator
+# (android-launch). Every file a tag publishes gets a build provenance
+# attestation, which `gh attestation verify <file> --repo
+# Lebbitheplow/open-dungeon-master-client` checks; the downloads are not
+# code signed, so this is how a player can tell one came from this build.
 name: release
 on:
   push:
@@ -46,10 +57,10 @@ jobs:
     outputs:
       server_sha: ${{ steps.server.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: client
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Lebbitheplow/open-dungeon-master
           path: open-dungeon-master
@@ -59,7 +70,7 @@ jobs:
       - name: The server commit this release ships
         id: server
         run: echo "sha=$(git -C open-dungeon-master rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - name: Install client dependencies
@@ -84,7 +95,7 @@ jobs:
         run: |
           find vendor/server -type l -delete
           tar -C vendor -czf server-payload.tgz server
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: server-payload
           path: client/server-payload.tgz
@@ -92,6 +103,10 @@ jobs:
 
   desktop:
     needs: payload
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -113,17 +128,17 @@ jobs:
             rebuild: true
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Lebbitheplow/open-dungeon-master
           path: open-dungeon-master
           ref: ${{ needs.payload.outputs.server_sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - run: npm ci
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: server-payload
       - name: Unpack the server payload and recreate the module aliases
@@ -155,6 +170,27 @@ jobs:
           npm run build && node scripts/stage-desktop-payload.mjs &&
           npx electron-builder ${{ matrix.args }}
           --publish ${{ startsWith(github.ref, 'refs/tags/v') && 'always' || 'never' }}
+      - name: Keep the Windows installer for the install check
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-installer
+          path: release/*.exe
+          retention-days: 3
+      - name: The files this build publishes
+        id: built
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          {
+            echo "files<<EOF"
+            ls release/*.exe release/*.AppImage release/*.deb release/*.rpm release/*.tar.gz release/*.dmg release/*-mac.zip 2>/dev/null || true
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: Attest where they were built
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: ${{ steps.built.outputs.files }}
       # The local AI installer sizes its models from a PowerShell scan of the
       # display adapters; only a Windows machine can say whether it runs.
       - name: Check the graphics memory scan runs on Windows
@@ -174,17 +210,21 @@ jobs:
   flatpak:
     needs: payload
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     # Best effort: a flatpak-builder or runtime hiccup should not block the
     # release of everything else.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Lebbitheplow/open-dungeon-master
           path: open-dungeon-master
           ref: ${{ needs.payload.outputs.server_sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - name: Install flatpak-builder and runtimes
@@ -197,7 +237,7 @@ jobs:
             org.freedesktop.Sdk//24.08 \
             org.electronjs.Electron2.BaseApp//24.08
       - run: npm ci
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: server-payload
       - name: Unpack the server payload and recreate the module aliases
@@ -219,6 +259,11 @@ jobs:
           npm run build && node scripts/stage-desktop-payload.mjs &&
           npx electron-builder --linux flatpak
           --publish ${{ startsWith(github.ref, 'refs/tags/v') && 'always' || 'never' }}
+      - name: Attest where the bundle was built
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: release/*.flatpak
 
   android:
     # Runs after a desktop job so the draft release already exists for the
@@ -230,20 +275,24 @@ jobs:
     # which shares the device's world on the internet.
     needs: [payload, desktop]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     env:
       NODE_ANDROID_RELEASE: node-android-v24.20.0
       CLOUDFLARED_ANDROID_RELEASE: cloudflared-android-2026.8.3
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Lebbitheplow/open-dungeon-master
           path: open-dungeon-master
           ref: ${{ needs.payload.outputs.server_sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: 21
@@ -252,7 +301,7 @@ jobs:
       - name: Install mobile dependencies
         working-directory: mobile
         run: npm ci
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: server-payload
       - name: Unpack the server payload and recreate the module aliases
@@ -267,14 +316,19 @@ jobs:
             "$built"*) echo "server $here" ;;
             *) echo "::error::payload is server $built, screens are server $here"; exit 1 ;;
           esac
+      # Both run as native code inside the APK, so each tarball must be the
+      # one mobile/runtime.sha256 names before it is unpacked: a release
+      # asset replaced since stops the build here. A new runtime release
+      # changes the tag above and its line in that file together.
       - name: Fetch the Node runtime and cloudflared for Android
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p mobile/runtime
           gh release download "$NODE_ANDROID_RELEASE" --pattern '*.tar.gz' --dir mobile/runtime
-          tar -C mobile/runtime -xzf "mobile/runtime/$NODE_ANDROID_RELEASE.tar.gz"
           gh release download "$CLOUDFLARED_ANDROID_RELEASE" --pattern '*.tar.gz' --dir mobile/runtime
+          (cd mobile/runtime && sha256sum --strict -c ../runtime.sha256)
+          tar -C mobile/runtime -xzf "mobile/runtime/$NODE_ANDROID_RELEASE.tar.gz"
           tar -C mobile/runtime -xzf "mobile/runtime/$CLOUDFLARED_ANDROID_RELEASE.tar.gz"
           ls mobile/runtime/node-android mobile/runtime/cloudflared-android
       # The web assets come first: the payload leaves out the art they
@@ -305,6 +359,16 @@ jobs:
           df -h . | tail -1
           free -m | head -2
           ./gradlew assembleRelease bundleRelease --stacktrace
+      # The plugin classes and bridge methods Capacitor reaches by
+      # reflection, checked in the signed, minified APK's own dex.
+      - name: R8 kept what the plugin bridge calls by name
+        run: node mobile/scripts/check-r8-keeps.mjs mobile/android/app/build/outputs/apk/release/app-arm64-v8a-release.apk
+      - name: Keep the x86_64 APK for the emulator launch
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-x86_64-apk
+          path: mobile/android/app/build/outputs/apk/release/app-x86_64-release.apk
+          retention-days: 3
       - name: Upload the APK and app bundle to the release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -325,6 +389,79 @@ jobs:
           gh release upload "v$version" \
             "open-dungeon-master-client-$version.apk" \
             "open-dungeon-master-client-$version.aab" --clobber
+      - name: Attest where they were built
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: |
+            open-dungeon-master-client-*.apk
+            open-dungeon-master-client-*.aab
+
+  # The NSIS installer this run built, installed silently over the release
+  # before it on a clean Windows runner: the previous version starts its
+  # world and leaves a mark in the run tree's data folder, the new one must
+  # bring back the same world with the mark and every module alias reaching
+  # its package (client issue 49, server issue 280, both Windows-only and
+  # both missed until players upgraded). Then a fresh profile, then the app
+  # itself opening. scripts/smoke-installed.mjs says what each step checks.
+  windows-install:
+    needs: desktop
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-installer
+          path: new
+      - name: Fetch the installer of the release before this one
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous=$(gh release list --exclude-drafts --exclude-pre-releases --limit 10 --json tagName -q '.[].tagName' | grep -vx "${GITHUB_REF_NAME}" | head -n 1)
+          echo "previous release: $previous"
+          gh release download "$previous" --pattern 'Open-Dungeon-Master-Setup-*.exe' --dir previous
+      - name: Install the previous release and start its world
+        run: |
+          node scripts/smoke-installed.mjs install previous/Open-Dungeon-Master-Setup-*.exe "$RUNNER_TEMP/odm"
+          node scripts/smoke-installed.mjs world "$RUNNER_TEMP/odm/Open Dungeon Master.exe" seed "$RUNNER_TEMP/odm-world"
+      - name: Install this build over it; the same world comes back whole
+        # The artifact keeps electron-builder's own name, "Open Dungeon Master
+        # Setup x.y.z.exe"; only the release asset is renamed with dashes.
+        run: |
+          node scripts/smoke-installed.mjs install new/*Setup*.exe "$RUNNER_TEMP/odm"
+          node scripts/smoke-installed.mjs world "$RUNNER_TEMP/odm/Open Dungeon Master.exe" verify "$RUNNER_TEMP/odm-world"
+      - name: A world in an empty profile starts on this build
+        run: node scripts/smoke-installed.mjs world "$RUNNER_TEMP/odm/Open Dungeon Master.exe" start "$RUNNER_TEMP/odm-fresh"
+      - name: The installed app opens and stays up
+        run: node scripts/smoke-installed.mjs launch "$RUNNER_TEMP/odm/Open Dungeon Master.exe"
+
+  # The signed, minified x86_64 APK this run built, installed on an
+  # emulator and started: what debug builds and unit tests never run.
+  android-launch:
+    needs: android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: android-x86_64-apk
+      - name: Let the emulator use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Start the release APK on an emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash mobile/scripts/launch-on-emulator.sh app-x86_64-release.apk
 
   # The checks a pull request gets (.github/workflows/ci.yml), against the
   # server commit this release ships. A failure leaves the release a draft.
@@ -332,16 +469,16 @@ jobs:
     needs: payload
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Lebbitheplow/open-dungeon-master
           path: open-dungeon-master
           ref: ${{ needs.payload.outputs.server_sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: 21
@@ -362,10 +499,22 @@ jobs:
         run: cd mobile && npm run sync && cd android && ./gradlew testDebugUnitTest --stacktrace
 
   publish:
-    needs: [checks, desktop, flatpak, android]
+    needs: [checks, desktop, flatpak, android, windows-install, android-launch]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
+      # The flatpak job may fail without holding the release back. Its
+      # installs are then not offered this version (src/main/updater.ts
+      # releaseHasAsset), and the run says so here.
+      - name: Say when the release has no flatpak bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          bundles=$(gh release view "${GITHUB_REF_NAME}" --json assets -q '[.assets[].name | select(endswith(".flatpak"))] | length')
+          if [ "$bundles" = 0 ]; then
+            echo "::warning::${GITHUB_REF_NAME} has no flatpak bundle; flatpak installs are not offered this version until one is uploaded."
+          fi
       - name: Publish the draft release
         env:
           GH_TOKEN: ${{ github.token }}

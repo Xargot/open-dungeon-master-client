@@ -85,14 +85,20 @@ export async function publishTables(input: {
 export async function dropTables(input: {
   codes: readonly string[];
   secretFor: (code: string) => string;
-}): Promise<void> {
+}): Promise<string[]> {
   ledger.clear();
+  const failed: string[] = [];
   for (const code of input.codes) {
-    await send(tableEndpoint(brokerBase(), code), {
+    const response = await send(tableEndpoint(brokerBase(), code), {
       method: "DELETE",
       headers: { "x-table-secret": input.secretFor(code) },
     });
+    // Kept for the next sync only when trying again can help: no answer, or
+    // the broker failing. A code the broker refuses (claimed by another
+    // host, 409) or cannot read (400) answers the same way next time.
+    if (!response || response.status >= 500 || response.status === 429) failed.push(code);
   }
+  return failed;
 }
 
 // Where a table is right now, or "" when no host has it online.

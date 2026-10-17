@@ -245,6 +245,9 @@ test("an rpm install downloads the package, installs it through pkexec and resta
   await updater.downloadAndInstall();
   const file = path.join(folder, "open-dungeon-master-client-0.12.1-x86_64.rpm");
   assert.deepEqual(asked, [
+    // The check: does this release have an rpm at all.
+    "https://api.github.com/repos/Lebbitheplow/open-dungeon-master-client/releases/tags/v0.12.1",
+    // The download: the rpm's checksum, then the rpm.
     "https://api.github.com/repos/Lebbitheplow/open-dungeon-master-client/releases/tags/v0.12.1",
     "https://github.com/Lebbitheplow/open-dungeon-master-client/releases/download/v0.12.1/open-dungeon-master-client-0.12.1-x86_64.rpm",
   ]);
@@ -723,7 +726,7 @@ test("a release that lists no checksum for the package downloads nothing", async
   });
   const updater = new Updater("managed", "0.12.0", async () => "0.12.1", 0, host);
   await assert.rejects(() => updater.downloadAndInstall(), /lists no checksum/);
-  assert.equal(asked.length, 1, "only the listing was asked for");
+  assert.ok(asked.length > 0 && asked.every((url) => url.includes("/releases/tags/v0.12.1")), "only the listing was asked for");
   assert.deepEqual(log.ran, []);
   await fsp.rm(folder, { recursive: true, force: true });
 });
@@ -742,4 +745,24 @@ test("a failed package download leaves no partial file and says why", async () =
   assert.equal(updater.progress().state, "error");
   assert.deepEqual(await fsp.readdir(folder), []);
   await fsp.rm(folder, { recursive: true, force: true });
+});
+
+test("a release published without this install's package is not offered to it", async () => {
+  const { Updater } = await import("../dist/main/updater.js");
+  // The flatpak job failed: the release lists everything but the bundle.
+  const listing = (url) => {
+    const tag = /\/releases\/tags\/v([^/]+)$/.exec(String(url));
+    const all = releaseListing(tag[1], PACKAGE);
+    return Response.json({ assets: all.assets.filter((asset) => !asset.name.endsWith(".flatpak")) });
+  };
+  const flatpak = fakeHost({ format: "", flatpak: { id: "com.opendungeonmaster.client", system: false }, fetchImpl: listing });
+  const status = await new Updater("flatpak", "0.12.0", async () => "0.12.1", 0, flatpak.host).checkForUpdates();
+  assert.equal(status.available, false);
+  assert.equal(status.latest, "0.12.0");
+  // The same release still reaches an rpm install, whose package is there.
+  const rpm = fakeHost({ fetchImpl: listing });
+  assert.equal((await new Updater("managed", "0.12.0", async () => "0.12.1", 0, rpm.host).checkForUpdates()).available, true);
+  // A listing GitHub would not give does not hide the update.
+  const offline = fakeHost({ format: "", flatpak: { id: "x", system: false }, fetchImpl: async () => new Response("", { status: 503 }) });
+  assert.equal((await new Updater("flatpak", "0.12.0", async () => "0.12.1", 0, offline.host).checkForUpdates()).available, true);
 });

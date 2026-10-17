@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { PAD_INDEX, PadReader } from "../dist/shared/pad-input.js";
 import { navScore, ownArrowKey, pickFirst, pickNext } from "../dist/shared/spatial-nav.js";
 
@@ -154,3 +156,102 @@ test("a slider keeps left and right; a line between panels keeps the two directi
   assert.equal(ownArrowKey("button", null, "left"), null);
   assert.equal(ownArrowKey(null, null, "right"), null);
 });
+
+// R1 at the table, driven through the real navigator (src/renderer/gamepad.ts,
+// bundled here) over a page made of stand-ins: the server hides its
+// hold-to-talk mic when the world has no speech to text, and R1 then says so
+// instead of doing nothing.
+const gamepadModule = (async () => {
+  const { build } = await import("esbuild");
+  const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+  const out = await build({
+    entryPoints: [path.join(repo, "src", "renderer", "gamepad.ts")],
+    bundle: true,
+    format: "esm",
+    platform: "neutral",
+    write: false,
+    logLevel: "silent",
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(out.outputFiles[0].text).toString("base64")}`);
+})();
+
+function padPage({ composer, talk }) {
+  class FakeElement {
+    constructor(name, extra = {}) {
+      Object.assign(this, { name, tabIndex: 0, disabled: false, events: [], ...extra });
+    }
+    matches(selector) {
+      return selector === ":disabled" ? this.disabled : false;
+    }
+    getAttribute() {
+      return null;
+    }
+    closest() {
+      return null;
+    }
+    getBoundingClientRect() {
+      return { left: 0, top: 0, right: 40, bottom: 40, width: 40, height: 40 };
+    }
+    dispatchEvent(event) {
+      this.events.push(event.type);
+      return true;
+    }
+  }
+  const elements = {
+    "[data-tour='composer-input']": composer ? [new FakeElement("composer")] : [],
+    "[data-tour='composer-talk']": talk ? [new FakeElement("talk", talk === "disabled" ? { disabled: true } : {})] : [],
+  };
+  const frames = [];
+  const pads = [];
+  const listen = () => undefined;
+  Object.assign(globalThis, {
+    HTMLElement: FakeElement,
+    HTMLInputElement: class extends FakeElement {},
+    HTMLTextAreaElement: class extends FakeElement {},
+    HTMLSelectElement: class extends FakeElement {},
+    PointerEvent: class extends globalThis.Event {},
+    KeyboardEvent: class extends globalThis.Event {},
+    getComputedStyle: () => ({ visibility: "visible" }),
+    requestAnimationFrame: (callback) => frames.push(callback),
+    window: { addEventListener: listen, innerWidth: 1280, innerHeight: 800 },
+    document: {
+      documentElement: { classList: { add: listen, remove: listen } },
+      body: new FakeElement("body"),
+      activeElement: null,
+      addEventListener: listen,
+      querySelectorAll: (selector) => elements[selector] ?? [],
+    },
+  });
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { getGamepads: () => pads },
+  });
+  const press = (index, now) => {
+    const buttons = new Array(17).fill(0).map((_, at) => ({ value: at === index ? 1 : 0 }));
+    pads.splice(0, pads.length, { connected: true, buttons, axes: [0, 0, 0, 0] });
+    const pending = frames.splice(0);
+    for (const frame of pending) frame(now);
+  };
+  return { elements, press };
+}
+
+for (const [label, page, expected] of [
+  ["a table with no mic: R1 says the world has no speech to text", { composer: true, talk: null }, { notices: 1, pressed: false }],
+  ["a table with its mic: R1 holds it down and says nothing", { composer: true, talk: "on" }, { notices: 0, pressed: true }],
+  ["a mic disabled for now: R1 stays quiet", { composer: true, talk: "disabled" }, { notices: 0, pressed: false }],
+  ["a screen with no message box: R1 stays quiet", { composer: false, talk: null }, { notices: 0, pressed: false }],
+]) {
+  test(label, async () => {
+    const { startGamepad } = await gamepadModule;
+    const { NO_TALK_NOTICE } = await import("../dist/shared/deck.js");
+    const { elements, press } = padPage(page);
+    const notices = [];
+    // The pad is awake before the page loads, so the navigator starts at once.
+    press(-1, 0);
+    startGamepad({ back() {}, menu() {}, settings() {}, keyboard() {}, notice: (text) => notices.push(text) });
+    press(PAD_INDEX.rb, 16);
+    assert.deepEqual(notices, expected.notices ? [NO_TALK_NOTICE] : []);
+    const talk = elements["[data-tour='composer-talk']"][0];
+    assert.equal(talk?.events.includes("pointerdown") ?? false, expected.pressed);
+  });
+}

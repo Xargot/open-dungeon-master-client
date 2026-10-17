@@ -96,6 +96,30 @@ export async function storeServerSecrets<T extends WithSecrets>(
   }
 }
 
+// The saved-server list's JSON, from the plain preferences. A value that is
+// not a list used to read as an empty one, which the next save wrote over;
+// now it is kept under a dated key first, so the entries can still be read
+// back, and the list starts empty (each entry's secrets stay in the store
+// under its id). A preferences read that fails is thrown, never taken for
+// "no servers".
+export async function readServerList<T>(
+  backend: SecretBackend,
+  key: string,
+  now: () => Date = () => new Date(),
+): Promise<T[]> {
+  const { value } = await backend.get({ key });
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed as T[];
+  } catch {
+    // Not JSON.
+  }
+  await backend.set({ key: `${key}.damaged-${now().toISOString()}`, value });
+  await backend.set({ key, value: "[]" });
+  return [];
+}
+
 // The list as loaded: each entry's secrets put back from the store. An entry
 // still carrying them in the plain JSON (saved before the store existed) has
 // them moved into the store; `migrated` says the plain list must be saved

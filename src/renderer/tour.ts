@@ -46,10 +46,10 @@ export const APP_TOUR_STEPS: TourStep[] = [
   },
   {
     id: "story-ai",
-    title: "Enable an AI Dungeon Master",
-    body: `Story AI chooses who narrates the world on this device: a human at the table, an AI billed to your OpenAI API key${localModels}. To play with AI on someone else's server, connect to an AI-enabled server.`,
+    title: "Story AI for your world",
+    body: `Story AI is what the world on this device plays with: it shows what is set now, then offers no AI, an AI on your OpenAI API key${localModels}. Who runs each table is still chosen when you make the campaign. To play with AI on someone else's server, connect to an AI-enabled server.`,
     anchors: ["tile-story-ai", "drawer-story-ai", "hero"],
-    fallbackBody: `Begin your world and Story AI appears in the menu. It chooses who narrates: a human at the table, an AI billed to your OpenAI API key${localModels}. Or connect to an AI-enabled server and play there.`,
+    fallbackBody: `Begin your world and Story AI appears in the menu. It chooses who tells the story: a human at the table, an AI billed to your OpenAI API key${localModels}. Or connect to an AI-enabled server and play there.`,
   },
   {
     id: "workshop",
@@ -61,17 +61,17 @@ export const APP_TOUR_STEPS: TourStep[] = [
   },
   {
     id: "characters",
-    title: "Create your character",
-    body: "Build a character in the wizard, or keep a library of them to bring into any campaign.",
+    title: "Your characters",
+    body: "Keep a library of heroes to bring into any campaign, or build one in the wizard. Every lobby also offers ready-made heroes, for playing in a minute.",
     anchors: ["tile-characters", "hero"],
     fallbackBody:
       "Once you have entered a world, a Characters line appears in this menu for building your adventurers and keeping a library of them.",
   },
   {
     id: "campaign",
-    title: "Create your campaign",
-    body: "Start a new campaign here: pick a genre or a world pack, decide who narrates, and invite friends with a room code.",
-    anchors: ["tile-new-campaign", "hero"],
+    title: "Start a campaign",
+    body: "Quick start is a prepared one-evening adventure with ready-made heroes; New campaign builds your own table. Both open on the host named above them, and Change picks another.",
+    anchors: ["tile-quick-start", "tile-new-campaign", "hero"],
     fallbackBody:
       "Begin your world here. Once it is running, a New campaign line appears in this menu for starting adventures and inviting friends with a room code.",
   },

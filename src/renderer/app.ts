@@ -13,12 +13,14 @@ import {
 } from "./chrome.js";
 import { closeDrawer, createDrawer, isDrawerOpen, toggleDrawer } from "./drawer.js";
 import { startGamepad } from "./gamepad.js";
+import { showShellToast } from "./toast.js";
 import { renderHome } from "./home.js";
 import { aiProgress } from "./local-ai.js";
 import { renderAdd, renderAuth } from "./servers.js";
-import { gameBack, isGameShowing, preloadGame, tryOpenNative } from "./game-screen.js";
+import { escapeInGame, gameBack, isGameShowing, preloadGame, tryOpenNative } from "./game-screen.js";
 import { renderSettings, worldTransferPhase } from "./settings.js";
 import { refresh, refreshFeed, state, tunnelWatchers } from "./state.js";
+import { closeSteamOffer, isSteamOfferOpen, maybeOfferSteam } from "./steam.js";
 import { endTour, isTourActive, maybeStartAppTour } from "./tour.js";
 
 const { drawer, scrim } = createDrawer();
@@ -33,15 +35,18 @@ function rerenderHome(): void {
 }
 
 // The way back, for Android's back gesture and a controller's B: a running
-// tour ends first, then the update popup, an open drawer and a shell
-// screen over a world close; then the world's previous page, and any
-// inner screen returns home. layersOnly stops after the closing part. At
-// home, atRoot decides what back means.
-function goBack(layersOnly: boolean, atRoot: () => void): void {
+// tour ends first, then the update popup, the Add to Steam offer, an open
+// drawer and a shell screen over a world close; then, for the gesture,
+// whatever the world's page has open (escapeGame: the pad sends its own
+// Escape before it asks); then the world's previous page, and any inner
+// screen returns home. layersOnly stops after the closing part. At home,
+// atRoot decides what back means.
+function goBack(layersOnly: boolean, atRoot: () => void, escapeGame = false): void {
   if (isTourActive()) endTour();
   else if (isUpdatePopupOpen()) closeUpdatePopup();
+  else if (isSteamOfferOpen()) closeSteamOffer();
   else if (isDrawerOpen()) closeDrawer();
-  else if (closeOverlay() || layersOnly) return;
+  else if (closeOverlay() || (escapeGame && isGameShowing() && escapeInGame()) || layersOnly) return;
   else if (isGameShowing() && gameBack()) return;
   else if (state.screenName === "home") atRoot();
   else goHome();
@@ -59,9 +64,10 @@ window.odm.onEvent((event) => {
     goHome();
     void refreshFeed();
   } else if (event.kind === "back") {
-    // Android's back gesture: home leaves the app, the way a root screen
+    // Android's back gesture: a world's open tour or dialog closes before
+    // its page goes back, and home leaves the app, the way a root screen
     // should.
-    goBack(false, () => void window.odm.leaveApp?.());
+    goBack(false, () => void window.odm.leaveApp?.(), true);
   } else if (event.kind === "local-status") {
     state.local = event.status;
     rerenderLive();
@@ -184,13 +190,37 @@ startGamepad({
     const multiline = field instanceof HTMLTextAreaElement || field.isContentEditable;
     void window.odm.steamKeyboard(true, { x: box.left, y: box.top, width: box.width, height: box.height }, multiline);
   },
+  notice: showShellToast,
 });
 
 // Escape closes a shell screen laid over a world (the drawer's own
-// listener closes the drawer the same way).
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && closeOverlay()) event.preventDefault();
-});
+// listener closes the drawer the same way). On a shell screen of its own
+// (Settings, Story AI, adding a server) it is the way back, as Android's
+// back and a controller's B are: home. Read in the capture phase, before
+// the tour, the drawer and the Steam offer close themselves, so their
+// Escape stays theirs. A world's page keeps Escape for its own dialogs, the
+// home screen has nowhere further back, and in a text field the first
+// Escape only leaves the field, so nothing typed is lost to it.
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    if (closeOverlay()) {
+      event.preventDefault();
+      return;
+    }
+    if (isTourActive() || isUpdatePopupOpen() || isSteamOfferOpen() || isDrawerOpen()) return;
+    if (isGameShowing() || state.screenName === "home") return;
+    const field = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>("input, textarea, select, [contenteditable]") : null;
+    if (field) {
+      field.blur();
+      return;
+    }
+    event.preventDefault();
+    goHome();
+  },
+  true,
+);
 
 // The screens' theme reaches the shell's own chrome through the same
 // attribute the server sets on <html> (docs/vtt-parity-implementation-plan.md
@@ -208,17 +238,26 @@ const tableCampaign = tableQuery.get("campaign") ?? "";
 
 void refresh().then(async () => {
   if (tableHost && tableCampaign) {
-    // The host's version gates the native screens; the device world
-    // answers from its status, a remote host from a probe.
-    const server = state.servers.find((entry) => entry.id === tableHost);
-    const probed = server ? await window.odm.probeServer(server.origin).catch(() => null) : null;
-    const version = probed?.ok ? probed.probe.version : state.local.serverVersion;
-    const opened = await tryOpenNative(tableHost, `/campaigns/${encodeURIComponent(tableCampaign)}/table`, version).catch(() => false);
+    const tablePath = `/campaigns/${encodeURIComponent(tableCampaign)}/table`;
+    let opened = false;
+    if (tableHost !== "local" && window.odm.prepareRemote) {
+      const prepared = await window.odm.prepareRemote(tableHost).catch(() => null);
+      if (prepared?.ok) {
+        opened = await tryOpenNative(tableHost, tablePath, prepared.version, prepared.session).catch(() => false);
+      }
+    } else {
+      // The device world and Android keep their existing native entry path.
+      const server = state.servers.find((entry) => entry.id === tableHost);
+      const probed = server ? await window.odm.probeServer(server.origin).catch(() => null) : null;
+      const version = probed?.ok ? probed.probe.version : state.local.serverVersion;
+      opened = await tryOpenNative(tableHost, tablePath, version).catch(() => false);
+    }
     if (opened) return;
   }
   renderHome();
   void refreshFeed();
   maybeStartAppTour();
+  maybeOfferSteam();
   // Once the home screen is up, the game bundle loads in the background so
   // entering a world does not start with a blank page.
   setTimeout(preloadGame, 1000);
