@@ -142,6 +142,9 @@ function joinCodeOf(value: unknown): string {
   return CODE_SHAPE.test(code) ? code : "";
 }
 
+// How long entering the world waits for the local story AI's listener.
+const LOCAL_AI_ENTRY_WAIT_MS = 8_000;
+
 function fail(err: unknown): { ok: false; error: string } {
   return { ok: false, error: err instanceof Error ? err.message : "Something went wrong." };
 }
@@ -425,6 +428,13 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
   shellIpc.handle("prefs:portal", () => store.portal());
   shellIpc.handle("prefs:set-portal", (_event, on: unknown) => {
     store.setPortal(on !== false);
+  });
+
+  // Stable or beta updates (src/main/updater.ts reads it at every check).
+  shellIpc.handle("prefs:update-channel", () => store.updateChannel());
+  shellIpc.handle("prefs:set-update-channel", (_event, channel: unknown) => {
+    store.setUpdateChannel(channel === "beta" ? "beta" : "stable");
+    updater.channelChanged();
   });
 
   // Story memory (src/shared/story-memory.ts). Saving never restarts the
@@ -1169,9 +1179,14 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
     // A crash while sharing can leave a stale publicUrl behind; heal it.
     void syncPublicUrl();
-    // Whatever local AI is installed warms up in the background. The first
-    // AI turn or image simply waits for the load if the player beats it.
-    void localAi.start().catch(() => win.sendEvent({ kind: "local-ai-progress", status: localAi.status() }));
+    // The installed story AI comes up with the world: a few seconds for its
+    // listener, so the first turn meets a server rather than a refused
+    // connection. The model itself loads on that first request. A slow or
+    // failed start is not waited on; its status says what happened.
+    await Promise.race([
+      localAi.start().catch(() => win.sendEvent({ kind: "local-ai-progress", status: localAi.status() })),
+      new Promise((resolve) => setTimeout(resolve, LOCAL_AI_ENTRY_WAIT_MS)),
+    ]);
     void localAi.startComfy().catch(() => win.sendEvent({ kind: "local-ai-progress", status: localAi.status() }));
     let token = store.token(LOCAL_SERVER_ID);
     if (token && !(await tokenIsValid(local.origin, token))) token = null;
@@ -1229,7 +1244,15 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     return { ok: true };
   });
 
-  shellIpc.handle("local-ai:status", () => localAi.status());
+  shellIpc.handle("local-ai:status", () => localAi.refresh());
+  shellIpc.handle("local-ai:start", async () => {
+    try {
+      await localAi.restart();
+      return { ok: true, status: localAi.status() };
+    } catch (err) {
+      return fail(err);
+    }
+  });
 
   // The Steam Deck layout: the switch saves the choice and redraws at once;
   // the window itself (full screen in Game Mode) follows on the next start.
@@ -1354,6 +1377,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
   shellIpc.handle("diag:summary", async () => {
     const world = local.diagnostics();
     const status = localStatus();
+    const ai = await localAi.refresh();
     const home = os.homedir();
     const text = diagnosticSummary({
       app: {
@@ -1375,6 +1399,15 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
         packs: world.packs,
       },
       servers: store.list().length,
+      localAi: {
+        installedLabel: ai.installedLabel,
+        installedTierId: ai.installedTierId,
+        running: ai.running,
+        external: ai.external,
+        endpoint: ai.endpoint,
+        error: ai.error,
+        comfy: ai.comfy,
+      },
       verify: await local.verify(false).catch(() => null),
       paths: { userData: redactHome(app.getPath("userData"), home), log: redactHome(local.logFile, home) },
     });

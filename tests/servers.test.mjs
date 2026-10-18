@@ -183,6 +183,16 @@ test("the local entry is addressed by id and hidden from the remote list", () =>
   assert.equal(store.token(LOCAL_SERVER_ID), "local-tok-2");
 });
 
+test("updates stay on stable until beta is chosen, and the choice is kept", () => {
+  const { store, dir } = freshStore();
+  assert.equal(store.updateChannel(), "stable");
+  store.setUpdateChannel("beta");
+  assert.equal(new ServerStore(path.join(dir, "servers.json"), crypt).updateChannel(), "beta");
+  store.setUpdateChannel("stable");
+  assert.equal(store.updateChannel(), "stable");
+  assert.equal("betaUpdates" in JSON.parse(fs.readFileSync(path.join(dir, "servers.json"), "utf8")), false);
+});
+
 test("registry persists across instances and survives corruption", () => {
   const { store, dir } = freshStore();
   const entry = store.upsert({

@@ -116,6 +116,10 @@ function deckSection(): HTMLElement | null {
   return card;
 }
 
+// Stable or beta updates (src/main/updater.ts). Asked for on each paint, like
+// portal mode; until the answer lands the switch shows stable.
+let betaUpdates: boolean | null = null;
+
 function appSection(): HTMLElement {
   const version = state.appInfo?.version ? `Version ${state.appInfo.version}` : "";
   const { card, body } = section(
@@ -128,6 +132,29 @@ function appSection(): HTMLElement {
   if (!isAndroid) {
     const note = el("p", "settings-note", state.updateNote);
     body.append(note, updateControls(() => renderSettings()));
+    const askChannel = window.odm.updateChannel;
+    const setChannel = window.odm.setUpdateChannel;
+    if (askChannel && setChannel) {
+      if (betaUpdates === null) {
+        void askChannel().then((channel) => {
+          betaUpdates = channel === "beta";
+          if (state.screenName === "settings") renderSettings();
+        });
+      }
+      body.append(
+        row(
+          "Beta updates: offer each night's build before it is promoted to stable. Turned off, the app keeps the version it has until a stable release passes it.",
+          switchButton(betaUpdates ?? false, (next) => {
+            betaUpdates = next;
+            void setChannel(next ? "beta" : "stable").then(() => {
+              state.updateStatus = null;
+              state.updateNote = next ? "Beta updates are on." : "Updates are back on stable releases.";
+              if (state.screenName === "settings") renderSettings();
+            });
+          }),
+        ),
+      );
+    }
   }
   return card;
 }

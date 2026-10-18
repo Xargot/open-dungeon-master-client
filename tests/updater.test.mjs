@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   detectInstallKind,
   fetchLatestReleaseVersion,
+  fetchNewestReleaseVersion,
   isNewerVersion,
   packageAssetName,
   Updater,
@@ -142,6 +143,58 @@ test("fetchLatestReleaseVersion reads the tag and treats 404 as no release", asy
   assert.equal(await fetchLatestReleaseVersion(missing), "");
   const broken = async () => ({ ok: false, status: 503, json: async () => ({}) });
   await assert.rejects(() => fetchLatestReleaseVersion(broken), /503/);
+});
+
+test("the beta channel takes the highest version of any published release", async () => {
+  let asked = "";
+  const list = async (url) => {
+    asked = String(url);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => [
+        // A fix to the stable line, published after the newer beta.
+        { tag_name: "v0.20.7", prerelease: false },
+        { tag_name: "v0.21.2", prerelease: true },
+        { tag_name: "v0.21.3", draft: true },
+        { tag_name: "v0.20.6", prerelease: false },
+      ],
+    };
+  };
+  assert.equal(await fetchNewestReleaseVersion("beta", list), "0.21.2");
+  assert.match(asked, /\/releases\?per_page=\d+$/);
+  await fetchNewestReleaseVersion("stable", list);
+  assert.match(asked, /\/releases\/latest$/, "stable asks for GitHub's latest release, which is never a prerelease");
+  const broken = async () => ({ ok: false, status: 503, json: async () => ({}) });
+  await assert.rejects(() => fetchNewestReleaseVersion("beta", broken), /503/);
+});
+
+test("the updater asks for the channel the player chose, at every check", async () => {
+  let channel = "stable";
+  const asked = [];
+  const fetchLatest = async (wanted) => {
+    asked.push(wanted);
+    return wanted === "beta" ? "0.21.2" : "0.20.6";
+  };
+  const updater = new Updater("portable", "0.20.6", fetchLatest, 0, null, () => channel);
+  const stable = await updater.checkForUpdates();
+  assert.deepEqual([stable.available, stable.channel], [false, "stable"]);
+  channel = "beta";
+  const beta = await updater.checkForUpdates();
+  assert.deepEqual([beta.available, beta.latest, beta.channel], [true, "0.21.2", "beta"]);
+  assert.match(beta.releasesUrl, /\/releases\/tag\/v0\.21\.2$/, "a beta links to its own release, not GitHub's latest");
+  assert.deepEqual(asked, ["stable", "beta"]);
+});
+
+test("switching channels drops what the last check found", async () => {
+  const updater = new Updater("flatpak", "0.8.1", async () => "0.9.0", 0);
+  const heard = new Promise((resolve) => updater.onStatus(() => resolve(updater.progress())));
+  updater.checkOnStartup();
+  await heard;
+  assert.equal(updater.lastFound()?.latest, "0.9.0");
+  updater.channelChanged();
+  assert.equal(updater.lastFound(), null);
+  assert.equal(updater.progress().state, "idle");
 });
 
 const PACKAGE = new Uint8Array([1, 2, 3, 4]);

@@ -33,6 +33,8 @@ const bridge: OdmBridge = {
   setKeepSignIns: (keep: boolean) => ipcRenderer.invoke("prefs:set-keep-sign-ins", keep),
   portalMode: () => ipcRenderer.invoke("prefs:portal"),
   setPortalMode: (on: boolean) => ipcRenderer.invoke("prefs:set-portal", on),
+  updateChannel: () => ipcRenderer.invoke("prefs:update-channel"),
+  setUpdateChannel: (channel) => ipcRenderer.invoke("prefs:set-update-channel", channel),
   storyMemory: () => ipcRenderer.invoke("prefs:story-memory"),
   setStoryMemory: (choice) => ipcRenderer.invoke("prefs:set-story-memory", choice),
   applyStoryMemory: () => ipcRenderer.invoke("prefs:apply-story-memory"),
@@ -56,6 +58,7 @@ const bridge: OdmBridge = {
   localAiUninstall: (component: "text" | "images") =>
     ipcRenderer.invoke("local-ai:uninstall", component),
   localAiStatus: () => ipcRenderer.invoke("local-ai:status"),
+  localAiStart: () => ipcRenderer.invoke("local-ai:start"),
   localSpeechStatus: () => ipcRenderer.invoke("local:speech-status"),
   localSpeechInstall: () => ipcRenderer.invoke("local:speech-install"),
   localExportWorld: () => ipcRenderer.invoke("local:export-world"),

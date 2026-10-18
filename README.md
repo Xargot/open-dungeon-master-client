@@ -46,8 +46,12 @@ play on.
 
 ## Download
 
-Every release is on the
+The latest stable release is on the
 [Releases page](https://github.com/Lebbitheplow/open-dungeon-master-client/releases/latest).
+Every build ships first as a beta (marked Pre-release there) and is promoted to stable
+unchanged once it holds up; the desktop app offers the betas too with App settings >
+This app > Beta updates. How the channels work:
+[releases.md](https://github.com/Lebbitheplow/open-dungeon-master/blob/main/docs/releases.md).
 More help, and the full player guide, live at
 [opendungeonmaster.com](https://opendungeonmaster.com/guide/).
 
@@ -252,8 +256,10 @@ deletes anything you made:
 - **Clear cached files** drops what the app cached from servers; sign-ins,
   saved servers and your world stay.
 - **Copy summary** puts a short report on the clipboard for a bug report:
-  versions, the state of your world and which server files are wrong. It
-  names no accounts, keys or campaign text, and shortens paths to `~`.
+  versions, the state of your world, whether the local story and image AI
+  are installed and answering (and the last thing that stopped them), and
+  which server files are wrong. It names no accounts, keys or campaign
+  text, and shortens paths to `~`.
 - **Show logs** opens the folder with `local-server.log` and `tunnel.log`.
   Read a log before sharing it; the world's own output goes there.
 - **Reset the app** is the one row that takes your world out of the app's
@@ -363,10 +369,15 @@ built from `vendor/server`. To rebuild the runtimes themselves, see
 ### Releases (maintainers)
 
 Pushing a `v<version>` tag runs [release.yml](.github/workflows/release.yml): it
-bundles the server from the server repository's `main`, builds every desktop target
-plus the Flatpak, builds the signed Android APK and app bundle, and publishes them to
-the release. Because CI builds from the server's `main`, push the server first when a
-client release depends on server changes. The Android signing key comes from the
+bundles the server's newest release (beta or stable; a tag off `main` takes the latest
+stable one), builds every desktop target plus the Flatpak, builds the signed Android
+APK and app bundle, and publishes them to the release: as a beta (a prerelease) while
+the repository variable `PUBLISH_AS_BETA` is `true`, otherwise as the latest release.
+Publish the server release first when a client release depends on server changes.
+Promote a beta that held up with
+`gh release edit v<version> --prerelease=false --latest`, together with the server
+release it bundles (its release body names it); the rules are in the server's
+[releases.md](https://github.com/Lebbitheplow/open-dungeon-master/blob/main/docs/releases.md). The Android signing key comes from the
 `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS`
 repository secrets. Keep `package.json` and `mobile/package.json` on the same version;
 the Android upload refuses a tag that does not match.

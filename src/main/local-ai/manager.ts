@@ -32,6 +32,19 @@ const runFile = promisify(execFile);
 
 const PORT = 8001;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
+// What the ODM server is pointed at (wiring.ts), for status and summaries.
+export const LOCAL_AI_ENDPOINT = `${ORIGIN}/v1`;
+
+// A llama-server that was answering and then exited (a driver fault, out of
+// memory, killed from outside) is started again after these delays, one per
+// exit; more exits than delays inside CRASH_WINDOW_MS and the manager stops
+// trying and says so, until Story AI asks for a start.
+const RESTART_DELAYS_MS = [2_000, 5_000, 15_000];
+const CRASH_WINDOW_MS = 10 * 60_000;
+
+export interface LocalAiTuning {
+  restartDelaysMs?: number[];
+}
 
 interface InstallState {
   tierId: string;
@@ -48,11 +61,21 @@ export class LocalAiManager {
   private error = "";
   private externalServer = false;
   private ready = false;
+  // One start at a time: a second caller (install done, then the world
+  // entered) joins the start under way instead of racing it for the port.
+  private startPromise: Promise<void> | null = null;
+  private crashes: number[] = [];
+  private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly restartDelays: number[];
   private hardware: HardwareInfo | null = null;
   private readonly listeners = new Set<() => void>();
   readonly comfy: ComfyManager;
 
-  constructor(private readonly rootDir: string) {
+  constructor(
+    private readonly rootDir: string,
+    tuning: LocalAiTuning = {},
+  ) {
+    this.restartDelays = tuning.restartDelaysMs ?? RESTART_DELAYS_MS;
     this.comfy = new ComfyManager(path.join(rootDir, "comfy"), () => this.emit());
   }
 
@@ -112,6 +135,8 @@ export class LocalAiManager {
       installedLabel: state ? (catalogEntry(state.tierId)?.label ?? "") : "",
       utilityInstalled: Boolean(state?.utilityFile),
       running: this.externalServer || (this.ready && this.child !== null && this.child.exitCode === null),
+      external: this.externalServer,
+      endpoint: LOCAL_AI_ENDPOINT,
       busy: this.busy,
       progress: this.progress,
       error: this.error,
@@ -246,7 +271,10 @@ export class LocalAiManager {
     return this.state()?.utilityFile ? UTILITY_ENTRY.alias : "";
   }
 
-  private async portInUse(): Promise<boolean> {
+  // llama-server's own health: 200 once it is up. Started with a models
+  // preset it answers at once and loads a model on its first request, so
+  // this is the "listening" signal the start below waits for.
+  private async answersHealth(): Promise<boolean> {
     try {
       const response = await fetch(`${ORIGIN}/health`, { signal: AbortSignal.timeout(1500) });
       return response.ok;
@@ -255,19 +283,54 @@ export class LocalAiManager {
     }
   }
 
-  async start(): Promise<void> {
+  // Whether what listens on the port is a model server at all: one that
+  // lists its models on the OpenAI-compatible route, as the ODM server asks
+  // for them. Any answer used to count, so a stray program on 8001 saying
+  // 404 was adopted as the AI and the real one never started.
+  private async compatibleServerAt(): Promise<boolean> {
+    try {
+      const response = await fetch(`${ORIGIN}/v1/models`, { signal: AbortSignal.timeout(1500) });
+      if (!response.ok) return false;
+      const body = (await response.json().catch(() => null)) as { data?: unknown; models?: unknown } | null;
+      return Array.isArray(body?.data) || Array.isArray(body?.models);
+    } catch {
+      return false;
+    }
+  }
+
+  start(): Promise<void> {
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.doStart().finally(() => {
+      this.startPromise = null;
+    });
+    return this.startPromise;
+  }
+
+  private async doStart(): Promise<void> {
     const state = this.state();
     if (!state || (this.child && this.child.exitCode === null)) return;
-    if (await this.portInUse()) {
+    // Asked again, so what was adopted last time is checked again.
+    this.externalServer = false;
+    if (await this.compatibleServerAt()) {
       // Someone already runs an AI server here (a hand-managed llama-server,
       // Ollama behind a proxy). Theirs wins; nothing to manage.
       this.externalServer = true;
       this.error = "";
+      this.emit();
       return;
     }
     const entry = catalogEntry(state.tierId);
     const bin = this.llamaServerPath();
-    if (!entry || !bin) return;
+    if (!entry || !bin) {
+      // Installed by the state file's word, but not runnable: say so where
+      // the player looks (Story AI, the troubleshooting summary) instead of
+      // leaving the world to find a refused connection on its first turn.
+      this.error = !entry
+        ? `The installed model (${state.tierId}) is not in this version's catalog. Install the story model again from Story AI.`
+        : "The AI engine (llama-server) is missing from this install. Install the story model again from Story AI to put it back.";
+      this.emit();
+      throw new Error(this.error);
+    }
     this.busy = "starting";
     this.emit();
     try {
@@ -317,13 +380,19 @@ export class LocalAiManager {
           reject(new Error(`The local AI server could not start: ${err.message}`));
         });
       });
-      child.once("exit", () => {
-        if (this.child === child) {
-          this.child = null;
-          this.ready = false;
-          this.error = "The local AI server stopped (see llama-server.log).";
+      child.once("exit", (code, signal) => {
+        // Replaced or stopped on purpose: stopServer() cleared the field first.
+        if (this.child !== child) return;
+        const wasReady = this.ready;
+        this.child = null;
+        this.ready = false;
+        const why = code !== null ? `exit code ${code}` : `signal ${signal ?? "unknown"}`;
+        if (!wasReady) {
+          this.error = `The local AI server stopped during startup (${why}; see llama-server.log).`;
           this.emit();
+          return;
         }
+        this.scheduleRestart(why);
       });
       fs.closeSync(log);
       // Wait for the server process, not the model: the model loads in the
@@ -334,7 +403,7 @@ export class LocalAiManager {
       const healthy = await Promise.race([launchFailure, (async () => {
         const deadline = Date.now() + 30_000;
         while (Date.now() < deadline && child.exitCode === null && !launchFailed) {
-          if (await this.portInUse()) return true;
+          if (await this.answersHealth()) return true;
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
         return false;
@@ -356,9 +425,64 @@ export class LocalAiManager {
     }
   }
 
+  // A server that was answering and went away is brought back, a few times
+  // and with the reason on the status; past that the player is told where
+  // to look and how to start it again.
+  private scheduleRestart(why: string): void {
+    const now = Date.now();
+    this.crashes = this.crashes.filter((at) => now - at < CRASH_WINDOW_MS);
+    this.crashes.push(now);
+    const delay = this.restartDelays[this.crashes.length - 1];
+    if (delay === undefined) {
+      this.error =
+        `The local AI server stopped ${this.crashes.length} times in ten minutes (last ${why}); see llama-server.log. ` +
+        "Once the cause is fixed, start it again from Story AI, or install the story model again there.";
+      this.emit();
+      return;
+    }
+    this.error = `The local AI server stopped (${why}; see llama-server.log). Starting it again in ${Math.ceil(delay / 1000)}s...`;
+    this.emit();
+    this.clearRestart();
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      void this.start().catch(() => undefined);
+    }, delay);
+    this.restartTimer.unref?.();
+  }
+
+  private clearRestart(): void {
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = null;
+  }
+
+  // Asked for from Story AI: the crash count is forgotten and the engine is
+  // started afresh, whatever state it was left in.
+  async restart(): Promise<void> {
+    this.clearRestart();
+    await this.stopServer();
+    this.crashes = [];
+    this.error = "";
+    this.emit();
+    await this.start();
+  }
+
+  // The status with an adopted server's liveness checked again: one that has
+  // gone away is no longer "running", and the installed engine takes its
+  // place. status() alone is a snapshot and never probes.
+  async refresh(): Promise<LocalAiStatus> {
+    if (this.externalServer && !this.startPromise && !(await this.compatibleServerAt())) {
+      this.externalServer = false;
+      this.error = `The AI server that was answering on port ${PORT} is gone; starting the installed one.`;
+      this.emit();
+      void this.start().catch(() => undefined);
+    }
+    return this.status();
+  }
+
   // Stops only the llama-server, for a reinstall; stop() below is the quit
   // path and takes the image server down with it.
   private async stopServer(): Promise<void> {
+    this.clearRestart();
     const child = this.child;
     this.child = null;
     this.externalServer = false;

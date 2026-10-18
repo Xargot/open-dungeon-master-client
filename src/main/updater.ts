@@ -1,5 +1,5 @@
 import type { AppUpdater, ProgressInfo } from "electron-updater";
-import type { InstallKind, UpdateProgress, UpdateStatus } from "../shared/types";
+import type { InstallKind, UpdateChannel, UpdateProgress, UpdateStatus } from "../shared/types";
 
 // Desktop updates against the GitHub Releases feed (electron-builder.yml
 // publish block). Every install channel applies the new build its own way:
@@ -18,6 +18,12 @@ import type { InstallKind, UpdateProgress, UpdateStatus } from "../shared/types"
 // the self-updating ones fall back to that same question when the feed
 // declines to answer.
 //
+// Two channels (docs/releases.md in the server repository). Every build is
+// first published as a GitHub prerelease, the beta, and the ones that hold
+// up are promoted to stable by clearing that flag. Stable, the default, asks
+// for GitHub's latest release, which is never a prerelease; beta (Settings >
+// This app) takes the newest release of either kind.
+//
 // electron-updater drags in electron at require time, so it loads lazily
 // inside the class: this module must stay importable under plain node for
 // the unit tests.
@@ -30,6 +36,9 @@ const STARTUP_CHECK_DELAY_MS = 1_200;
 const REPO = "Lebbitheplow/open-dungeon-master-client";
 export const RELEASES_URL = `https://github.com/${REPO}/releases/latest`;
 const LATEST_RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`;
+// Newest first by date, so one page holds the newest beta and anything
+// published after it.
+const RELEASES_API = `https://api.github.com/repos/${REPO}/releases?per_page=30`;
 
 const SELF_UPDATE_KINDS: ReadonlySet<InstallKind> = new Set(["appimage", "nsis"]);
 
@@ -173,8 +182,9 @@ function appleScriptString(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-// Plain numeric dotted compare; the release stream is x.y.z with no
-// prerelease tags, so full semver rules would be dead weight.
+// Plain numeric dotted compare; every version is x.y.z, a beta being told
+// apart by its release's prerelease flag rather than a "-beta" suffix, so
+// full semver rules would be dead weight.
 export function isNewerVersion(latest: string, current: string): boolean {
   const a = latest.split(".").map((part) => parseInt(part, 10) || 0);
   const b = current.split(".").map((part) => parseInt(part, 10) || 0);
@@ -193,7 +203,7 @@ export function versionFromTag(tag: unknown): string {
   return /^\d+(\.\d+)+$/.test(bare) ? bare : "";
 }
 
-export type LatestVersionFetcher = () => Promise<string>;
+export type LatestVersionFetcher = (channel: UpdateChannel) => Promise<string>;
 
 // The newest published release on GitHub, straight from the API. No token:
 // the repo is public and one call per launch sits far under the anonymous
@@ -207,6 +217,26 @@ export async function fetchLatestReleaseVersion(fetchImpl: typeof fetch = fetch)
   if (!res.ok) throw new Error(`GitHub answered ${res.status} while checking for updates.`);
   const body = (await res.json()) as { tag_name?: unknown };
   return versionFromTag(body.tag_name);
+}
+
+// The newest release the channel takes. Beta is the highest version among
+// the recent releases, prereleases included: by version, not list order,
+// since a fix to the stable line can be published after a newer beta.
+export async function fetchNewestReleaseVersion(channel: UpdateChannel, fetchImpl: typeof fetch = fetch): Promise<string> {
+  if (channel !== "beta") return fetchLatestReleaseVersion(fetchImpl);
+  const res = await fetchImpl(RELEASES_API, {
+    headers: { Accept: "application/vnd.github+json", "User-Agent": "open-dungeon-master-client" },
+  });
+  if (res.status === 404) return "";
+  if (!res.ok) throw new Error(`GitHub answered ${res.status} while checking for updates.`);
+  const body = (await res.json()) as unknown;
+  let newest = "";
+  for (const release of Array.isArray(body) ? (body as { tag_name?: unknown; draft?: unknown }[]) : []) {
+    if (release?.draft === true) continue;
+    const version = versionFromTag(release?.tag_name);
+    if (version && (!newest || isNewerVersion(version, newest))) newest = version;
+  }
+  return newest;
 }
 
 // The SHA-256 GitHub computed for a release file when it was uploaded, asked
@@ -320,9 +350,11 @@ export class Updater {
   constructor(
     readonly kind: InstallKind,
     private readonly currentVersion: string,
-    private readonly fetchLatest: LatestVersionFetcher = fetchLatestReleaseVersion,
+    private readonly fetchLatest: LatestVersionFetcher = (channel) => fetchNewestReleaseVersion(channel),
     private readonly startupDelayMs = STARTUP_CHECK_DELAY_MS,
     private readonly host: InstallHost | null = null,
+    // Read at every check, so a change in Settings applies to the next one.
+    private readonly channel: () => UpdateChannel = () => "stable",
   ) {}
 
   private assetFor(version: string): string {
@@ -353,6 +385,7 @@ export class Updater {
   }
 
   private statusOf(latest: string, available: boolean): UpdateStatus {
+    const channel = this.channel();
     return {
       current: this.currentVersion,
       latest: latest || this.currentVersion,
@@ -360,8 +393,28 @@ export class Updater {
       canSelfUpdate: this.canSelfUpdate(),
       canDownload: available && Boolean(this.assetFor(latest)),
       instruction: INSTRUCTIONS[this.kind],
-      releasesUrl: RELEASES_URL,
+      // "Latest" on GitHub is the stable release, so a beta links to its own page.
+      releasesUrl: channel === "beta" && available ? `https://github.com/${REPO}/releases/tag/v${latest}` : RELEASES_URL,
+      channel,
     };
+  }
+
+  // The player switched channels: what the last check found may now be
+  // wrong either way, so it is dropped until the next check.
+  channelChanged(): void {
+    this.found = null;
+    if (this.state.state === "available") this.setProgress({ state: "idle", latest: "", status: null });
+  }
+
+  // electron-updater's feed for this check's channel. With prereleases
+  // allowed and no channel name it reads the newest release of either kind
+  // (its latest.yml: versions carry no "-beta" suffix), and it never offers
+  // an older version, so a fix to the stable line published after a newer
+  // beta is passed over.
+  private async feed(): Promise<AppUpdater> {
+    const updater = await this.load();
+    updater.allowPrerelease = this.channel() === "beta";
+    return updater;
   }
 
   private async load(): Promise<AppUpdater> {
@@ -389,7 +442,7 @@ export class Updater {
   // whose release has that file (releaseHasAsset); the download itself
   // skips that ask, since its checksum lookup refuses a missing file anyway.
   private async checkGitHub(askForAsset = true): Promise<UpdateStatus> {
-    const latest = await this.fetchLatest();
+    const latest = await this.fetchLatest(this.channel());
     const newer = Boolean(latest) && isNewerVersion(latest, this.currentVersion);
     const asset = newer && askForAsset ? this.assetFor(latest) : "";
     if (asset && this.host && !(await releaseHasAsset(this.host.fetchImpl ?? fetch, latest, asset))) {
@@ -402,7 +455,7 @@ export class Updater {
     // A dev run has no app-update.yml and nothing meaningful to compare.
     if (this.kind === "dev") return this.statusOf(this.currentVersion, false);
     if (!this.canSelfUpdate()) return this.checkGitHub();
-    const updater = await this.load();
+    const updater = await this.feed();
     try {
       const result = await updater.checkForUpdates();
       // null is electron-updater declining to look (it did not recognise
@@ -430,7 +483,7 @@ export class Updater {
   // re-check first, since it only downloads what its own last check found,
   // and a stale renderer state must not be trusted.
   private async downloadFromFeed(): Promise<{ updater: AppUpdater; version: string; files: string[] }> {
-    const updater = await this.load();
+    const updater = await this.feed();
     const result = await updater.checkForUpdates();
     if (!result || !result.isUpdateAvailable) {
       this.setProgress({ state: "idle", percent: 0, error: "" });

@@ -18,7 +18,20 @@
 # ANDROID_KEY_ALIAS repo secrets.
 #
 # electron-builder publishes to a draft release; the final publish job flips
-# it live once every required artifact is uploaded.
+# it live once every required artifact is uploaded, as a beta while the
+# repository variable PUBLISH_AS_BETA is true: every tag then ships first as
+# a GitHub prerelease, and one that holds up is promoted to stable by hand
+# with `gh release edit vX.Y.Z --prerelease=false --latest`
+# (docs/releases.md in the server repository). Stable installs only ever see
+# GitHub's latest release, which is never a prerelease. With the variable
+# unset, every tag goes out as the latest release, as before the channels.
+#
+# Which server it bundles: a tag on main is a beta and takes the server's
+# newest release, beta or stable; a tag off main (a fix on a release/x.y
+# branch) takes the server's latest stable release. Either way the apps
+# carry a released server, never unreleased commits, so a client promoted to
+# stable carries a server that was. A dry run takes the server's main, or
+# the branch or tag it is given.
 #
 # Actions are pinned to the commit their major tag named, the same ones
 # ci.yml uses.
@@ -35,6 +48,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      server_ref:
+        description: "Server branch or tag to bundle (default: the server's main)"
+        required: false
+        type: string
 
 # The renderer bundles the server's own page components (the app's native
 # game screens, scripts/build-renderer.mjs), so every job that builds the
@@ -56,14 +74,42 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       server_sha: ${{ steps.server.outputs.sha }}
+      server_ref: ${{ steps.pick.outputs.ref }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: client
+      - name: The server release this build bundles
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SERVER_REPO: Lebbitheplow/open-dungeon-master
+          WANTED: ${{ inputs.server_ref }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            ref="${WANTED:-main}"
+          else
+            # identical or behind: the tagged commit is on main.
+            on_main=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)
+            case "$on_main" in
+              identical|behind)
+                # Versions are plain x.y.z, so sort -V orders them.
+                ref=$(gh release list --repo "$SERVER_REPO" --exclude-drafts --limit 100 --json tagName --jq '.[].tagName' | sort -V | tail -1) ;;
+              *)
+                ref=$(gh release view --repo "$SERVER_REPO" --json tagName --jq .tagName) ;;
+            esac
+          fi
+          if [ -z "$ref" ]; then
+            echo "::error::found no server release to bundle"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Bundles server $ref" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Lebbitheplow/open-dungeon-master
           path: open-dungeon-master
+          ref: ${{ steps.pick.outputs.ref }}
           # bundle-server.mjs creates a worktree from HEAD, so it needs real
           # history, not a shallow grafted checkout.
           fetch-depth: 0
@@ -499,7 +545,7 @@ jobs:
         run: cd mobile && npm run sync && cd android && ./gradlew testDebugUnitTest --stacktrace
 
   publish:
-    needs: [checks, desktop, flatpak, android, windows-install, android-launch]
+    needs: [payload, checks, desktop, flatpak, android, windows-install, android-launch]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -515,8 +561,25 @@ jobs:
           if [ "$bundles" = 0 ]; then
             echo "::warning::${GITHUB_REF_NAME} has no flatpak bundle; flatpak installs are not offered this version until one is uploaded."
           fi
+      # Live as a beta once the repository variable PUBLISH_AS_BETA is true
+      # (gh variable set PUBLISH_AS_BETA --body true); until then as the
+      # latest release, the way every release went out before the channels.
+      # The body names the server it bundles until release notes replace it,
+      # so promotion can pair it with that server release.
       - name: Publish the draft release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release edit "${GITHUB_REF_NAME}" --draft=false --latest
+          SERVER_REF: ${{ needs.payload.outputs.server_ref }}
+          PUBLISH_AS_BETA: ${{ vars.PUBLISH_AS_BETA }}
+        run: |
+          notes=()
+          if [ -z "$(gh release view "${GITHUB_REF_NAME}" --json body -q .body)" ]; then
+            notes=(--notes "Bundles server ${SERVER_REF}.")
+          fi
+          if [ "$PUBLISH_AS_BETA" = true ]; then
+            channel=(--prerelease --latest=false)
+          else
+            channel=(--latest)
+          fi
+          gh release edit "${GITHUB_REF_NAME}" --draft=false "${channel[@]}" "${notes[@]}"

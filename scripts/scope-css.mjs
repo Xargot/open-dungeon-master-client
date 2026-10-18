@@ -53,9 +53,16 @@ export function splitRules(css) {
     let preludeEnd = -1;
     for (; i < n; i++) {
       const ch = css[i];
+      // A backslash escapes the next character inside a string and outside
+      // one alike: Tailwind writes a class like after:content-[''] as
+      // `.after\:content-\[\'\'\]`, and reading its \' as the start of
+      // a string swallowed every rule up to the next quote in the sheet.
+      if (ch === "\\") {
+        i++;
+        continue;
+      }
       if (quote) {
-        if (ch === "\\") i++;
-        else if (ch === quote) quote = "";
+        if (ch === quote) quote = "";
         continue;
       }
       if (ch === '"' || ch === "'") {
@@ -103,9 +110,12 @@ export function splitDeclarations(body) {
   let start = 0;
   for (let i = 0; i < body.length; i++) {
     const ch = body[i];
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
     if (quote) {
-      if (ch === "\\") i++;
-      else if (ch === quote) quote = "";
+      if (ch === quote) quote = "";
       continue;
     }
     if (ch === '"' || ch === "'") quote = ch;

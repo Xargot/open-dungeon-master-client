@@ -15,7 +15,7 @@ import { closeDrawer, createDrawer, isDrawerOpen, toggleDrawer } from "./drawer.
 import { startGamepad } from "./gamepad.js";
 import { showShellToast } from "./toast.js";
 import { renderHome } from "./home.js";
-import { aiProgress } from "./local-ai.js";
+import { aiProgress, renderLocalAi } from "./local-ai.js";
 import { renderAdd, renderAuth } from "./servers.js";
 import { escapeInGame, gameBack, isGameShowing, preloadGame, tryOpenNative } from "./game-screen.js";
 import { renderSettings, worldTransferPhase } from "./settings.js";
@@ -87,6 +87,10 @@ window.odm.onEvent((event) => {
     if (installing && bar && event.status.progress) {
       bar.fill.style.width = `${event.status.progress.percent}%`;
       bar.label.textContent = `${event.status.progress.label} (${event.status.progress.percent}%)`;
+    } else if (state.screenName === "local-ai") {
+      // The installed-on-this-machine card follows the engine live: a
+      // crash, a restart, a start that gave up.
+      renderLocalAi(true, event.status);
     }
   } else if (event.kind === "update-progress") {
     const progress = event.progress;

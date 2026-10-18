@@ -1,4 +1,4 @@
-import type { VerifyReport } from "./types";
+import type { LocalAiStatus, VerifyReport } from "./types";
 
 // The summary a player copies into a bug report (Settings, Troubleshooting):
 // versions, the state of the device world, and whether the server files
@@ -23,6 +23,11 @@ export interface DiagnosticFacts {
   };
   // Saved servers, as a count: their addresses are the player's business.
   servers: number;
+  // The local AI the app manages: what is installed, whether it answers,
+  // and the last thing that went wrong with it. A world that opens fine
+  // can still have no storyteller, and the summary used to say nothing
+  // about that.
+  localAi: Pick<LocalAiStatus, "installedLabel" | "installedTierId" | "running" | "external" | "endpoint" | "error" | "comfy"> | null;
   // The check of the unpacked files: null when this build has no manifest
   // to check against (a development run), "skipped" where it was not run.
   verify: VerifyReport | null | "skipped";
@@ -53,6 +58,20 @@ export function describeVerify(report: VerifyReport | null): string {
   return `${parts.join(", ")} of ${report.listed}`;
 }
 
+// One line each for the story engine and the image engine.
+export function describeLocalAi(ai: DiagnosticFacts["localAi"]): string[] {
+  if (!ai) return ["Local AI: not available on this device"];
+  const story = !ai.installedTierId
+    ? "not installed"
+    : `${ai.installedLabel || ai.installedTierId} (${ai.installedTierId}), ${
+        ai.running ? (ai.external ? `answering at ${ai.endpoint}, started outside the app` : `running at ${ai.endpoint}`) : "stopped"
+      }${ai.error ? ` (${ai.error})` : ""}`;
+  const images = !ai.comfy.installed
+    ? "not installed"
+    : `ComfyUI ${ai.comfy.running ? "running" : "stopped"}${ai.comfy.checkpoint ? `, ${ai.comfy.checkpoint}` : ""}${ai.comfy.error ? ` (${ai.comfy.error})` : ""}`;
+  return [`Local AI: ${story}`, `Image AI: ${images}`];
+}
+
 export function diagnosticSummary(facts: DiagnosticFacts, now = new Date()): string {
   const { app, payload, runTree, world, verify } = facts;
   const stale = payload && runTree && payload.builtAt !== runTree.builtAt;
@@ -65,6 +84,7 @@ export function diagnosticSummary(facts: DiagnosticFacts, now = new Date()): str
     `World: ${world.state}${world.error ? ` (${world.error})` : ""}${world.firstRun ? ", never entered" : ""}`,
     `World data: database ${world.dbPresent ? "present" : "absent"}, key ${world.keyPresent ? "present" : "absent"}, installed world packs ${world.packs.length ? world.packs.join(", ") : "none"}`,
     `Saved servers: ${facts.servers}`,
+    ...describeLocalAi(facts.localAi),
     `Data folder: ${facts.paths.userData}`,
     `Log: ${facts.paths.log}`,
   ];

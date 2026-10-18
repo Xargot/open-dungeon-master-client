@@ -4,7 +4,7 @@ import path from "node:path";
 import type { HomeCache } from "../shared/home-feed-logic";
 import { parseDeckChoice, type DeckChoice } from "../shared/deck";
 import { parseStoryMemory, type StoryMemory } from "../shared/story-memory";
-import type { ServerSummary } from "../shared/types";
+import type { ServerSummary, UpdateChannel } from "../shared/types";
 
 // The reserved id for the bundled offline server's account entry. Its origin
 // changes with the local port, so it is always looked up by id, never origin.
@@ -56,6 +56,8 @@ interface RegistryFile {
   homeCache?: HomeCache;
   // Portal mode off by choice; absent means on.
   portalOff?: boolean;
+  // The updater offers the nightly betas too; absent means stable only.
+  betaUpdates?: true;
   // The device world's story memory (src/shared/story-memory.ts); absent
   // means the server's English default.
   storyMemory?: StoryMemory;
@@ -442,6 +444,17 @@ export class ServerStore {
     const registry = this.load();
     if (on) delete registry.portalOff;
     else registry.portalOff = true;
+    this.save(registry);
+  }
+
+  updateChannel(): UpdateChannel {
+    return this.load().betaUpdates ? "beta" : "stable";
+  }
+
+  setUpdateChannel(channel: UpdateChannel): void {
+    const registry = this.load();
+    if (channel === "beta") registry.betaUpdates = true;
+    else delete registry.betaUpdates;
     this.save(registry);
   }
 

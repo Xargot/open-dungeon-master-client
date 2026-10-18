@@ -23,6 +23,24 @@ test("splitRules separates statements and braced rules and ignores braces in str
   ]);
 });
 
+test("splitRules reads an escaped quote in a selector as part of the name, not as a string's start", () => {
+  // Tailwind's after:content-[''] (the builder's 44 px tap rings) escapes
+  // its quotes; the scoper used to open a string at the first \' and
+  // swallow every rule up to the next quote in the sheet, which left the
+  // game unstyled in the apps.
+  const css = String.raw`.after\:content-\[\'\'\]:after{content:""}.x{color:red}@media (hover:hover){.y{top:0}}`;
+  assert.deepEqual(splitRules(css), [
+    { prelude: String.raw`.after\:content-\[\'\'\]:after`, body: 'content:""' },
+    { prelude: ".x", body: "color:red" },
+    { prelude: "@media (hover:hover)", body: ".y{top:0}" },
+  ]);
+  const out = scopeCss(css, ".game-root", { keyframes: [] });
+  assert.equal(out, String.raw`.game-root .after\:content-\[\'\'\]:after{content:""}.game-root .x{color:red}@media (hover:hover){.game-root .y{top:0}}`);
+  let depth = 0;
+  for (const ch of out) depth += ch === "{" ? 1 : ch === "}" ? -1 : 0;
+  assert.equal(depth, 0);
+});
+
 test("splitRules drops the comments between rules, the licence comment Tailwind keeps included", () => {
   const rules = splitRules(`/*! tailwindcss v4 | MIT */\n@layer properties{@supports (x:y){*{--a:0}}}/* note */.x{color:red}/* tail */`);
   assert.deepEqual(rules, [

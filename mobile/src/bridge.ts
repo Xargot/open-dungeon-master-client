@@ -1780,6 +1780,7 @@ const bridge: OdmBridge = {
           packs: facts?.packs ?? [],
         },
         servers: servers.length,
+        localAi: null,
         verify: null,
         paths: { userData: "the app's private storage", log: "local-server.log in the app's private storage" },
       }),
@@ -1805,11 +1806,14 @@ const bridge: OdmBridge = {
     installedLabel: "",
     utilityInstalled: false,
     running: false,
+    external: false,
+    endpoint: "",
     busy: "" as const,
     progress: null,
     error: "",
     comfy: { installed: false, running: false, checkpoint: "", error: "" },
   }),
+  localAiStart: async () => fail(new Error("Local AI is desktop-only.")),
   async appInfo() {
     // Capacitor knows the installed APK's version; a plain browser dev run
     // does not, and the About card copes with an empty string.
@@ -1822,7 +1826,7 @@ const bridge: OdmBridge = {
   // About card renders as version-only without a special case crashing.
   updateCheck: async () => ({
     ok: true as const,
-    update: { current: "", latest: "", available: false, canSelfUpdate: false, canDownload: false, instruction: "", releasesUrl: "" },
+    update: { current: "", latest: "", available: false, canSelfUpdate: false, canDownload: false, instruction: "", releasesUrl: "", channel: "stable" },
   }),
   updateInstall: async () => fail(new Error("Updates come through the app store on Android.")),
 

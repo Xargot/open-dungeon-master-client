@@ -227,6 +227,10 @@ export interface LocalAiStatus {
   // Whether the small summaries model sits beside the story model.
   utilityInstalled: boolean;
   running: boolean;
+  // Running means a server the app did not start answers on the port.
+  external: boolean;
+  // Where the device world's text AI is pointed (http://127.0.0.1:8001/v1).
+  endpoint: string;
   busy: "" | "scanning" | "downloading" | "starting";
   progress: { label: string; percent: number } | null;
   error: string;
@@ -291,6 +295,11 @@ export type SteamAddResult =
   | { ok: true; state: "needs-restart" }
   | { ok: false; error: string };
 
+// Which releases the desktop updater offers. Every build is published as a
+// GitHub prerelease first, the beta; the ones that hold up are promoted to
+// stable by clearing that flag (docs/releases.md in the server repository).
+export type UpdateChannel = "stable" | "beta";
+
 export interface UpdateStatus {
   current: string;
   latest: string;
@@ -304,6 +313,8 @@ export interface UpdateStatus {
   instruction: string;
   // Where the new build lives, for the installs that fetch it themselves.
   releasesUrl: string;
+  // The channel the answer came from.
+  channel: UpdateChannel;
 }
 
 // "available" is the once-per-run background check finding something; the
@@ -507,6 +518,11 @@ export interface OdmBridge {
   // On by default; a host too old for it opens its own pages regardless.
   portalMode(): Promise<boolean>;
   setPortalMode(on: boolean): Promise<void>;
+  // Which releases the updater offers: stable by default, or each night's
+  // beta as well. Desktop only; absent on the phone, which updates through
+  // Google Play.
+  updateChannel?(): Promise<UpdateChannel>;
+  setUpdateChannel?(channel: UpdateChannel): Promise<void>;
   // How the desktop keeps saved sign-ins: absent on the phone, whose
   // secrets sit in the Android Keystore.
   credentialStorage?(): Promise<{ protection: "keyring" | "obscured" | "none"; keepSignIns: boolean }>;
@@ -574,6 +590,8 @@ export interface OdmBridge {
   localAiInstallComfy(): Promise<Result<{ status: LocalAiStatus; warning: string }>>;
   localAiUninstall(component: "text" | "images"): Promise<Result<{ status: LocalAiStatus; warning?: string }>>;
   localAiStatus(): Promise<LocalAiStatus>;
+  // Starts the installed story AI again after it stopped or gave up.
+  localAiStart(): Promise<Result<{ status: LocalAiStatus }>>;
   // Speech-to-text for dictation in the device world. Desktop only: the
   // phone dictates with its own recognizer, so it leaves these out.
   localSpeechStatus?(): Promise<Result<{ speech: LocalSpeechStatus }>>;

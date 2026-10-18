@@ -190,22 +190,40 @@ function localAiStatusCard(status: LocalAiStatus | null): HTMLElement | null {
   grow.append(el("div", "name", "Installed on this machine"));
   if (status.installedTierId) {
     const utility = status.utilityInstalled ? " + utility model" : "";
-    grow.append(
-      el(
-        "div",
-        "detail",
-        `${status.installedLabel || "Story model"}${utility}: ${status.running ? "running" : "stopped"}.`,
-      ),
-    );
+    const state = status.busy === "starting"
+      ? "starting"
+      : !status.running
+        ? "stopped"
+        : status.external
+          ? "running (a server started outside the app answers on its port)"
+          : "running";
+    grow.append(el("div", "detail", `${status.installedLabel || "Story model"}${utility}: ${state}.`));
+    // What stopped it, in the manager's words: a missing engine, a crash
+    // with its exit code, a server that keeps dying. Without this line a
+    // stopped AI only ever surfaced as a failed turn in the campaign.
+    if (status.error) grow.append(el("p", "error", status.error));
   }
   if (status.comfy.installed) {
     grow.append(
       el("div", "detail", `Image generation (ComfyUI): ${status.comfy.running ? "running" : "stopped"}.`),
     );
+    if (status.comfy.error) grow.append(el("p", "error", status.comfy.error));
   }
   head.append(grow);
   card.append(head);
   const actions = el("div", "actions");
+  if (status.installedTierId && !status.running && !status.busy) {
+    actions.append(
+      button("secondary", "Start the story AI", (btn) => {
+        btn.disabled = true;
+        btn.textContent = "Starting...";
+        void window.odm.localAiStart().then((result) => {
+          if (result.ok) renderLocalAi(true, result.status);
+          else renderError(result.error);
+        });
+      }, "play"),
+    );
+  }
   const uninstall = (label: string, component: "text" | "images", prompt: string): void => {
     actions.append(
       button("quiet danger", label, (btn) => {
