@@ -343,7 +343,9 @@ export class ServerStore {
       name: input.name,
       username: input.username,
       lastUsedAt: new Date().toISOString(),
-      tokenCipher: this.crypt.encrypt(input.token),
+      // No token is no session: a profile kept before its account exists
+      // (src/main/local-owner.ts) must not read as signed in.
+      tokenCipher: input.token ? this.crypt.encrypt(input.token) : "",
       tokenExpiresAt: input.tokenExpiresAt,
       // A token refresh must not drop the stored local password.
       secretCipher:

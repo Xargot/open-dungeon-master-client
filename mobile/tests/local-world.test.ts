@@ -14,6 +14,9 @@ function harness(overrides: {
   profile?: LocalProfile | null;
   tokenValid?: boolean;
   loginFails?: boolean;
+  registerFails?: boolean;
+  // What the world says of its owner (needsSetup); absent, it cannot say.
+  awaitsOwner?: boolean;
   adminSettings?: unknown;
   // What the world's admin listings answer, by path and role (a model
   // listing's `recommended`, or the setup's story listing).
@@ -62,6 +65,7 @@ function harness(overrides: {
     },
     registerAccount: async (_origin, input) => {
       calls.push(`register:${input.username}:${input.password}`);
+      if (overrides.registerFails) throw new Error("The world did not answer.");
       return { token: "tok-new", expiresAt: "2030-01-01T00:00:00.000Z", username: input.username };
     },
     tokenIsValid: async () => overrides.tokenValid ?? false,
@@ -78,6 +82,14 @@ function harness(overrides: {
     },
     emit: () => undefined,
     randomSecret: () => "minted-secret",
+    ...(overrides.awaitsOwner === undefined
+      ? {}
+      : {
+          fetchJson: async (url: string) =>
+            url.endsWith("/api/auth/providers")
+              ? { status: 200, data: { needsSetup: overrides.awaitsOwner } }
+              : { status: 404, data: null },
+        }),
   };
   return { deps, calls, opened, patches, posted, profile: () => profile, world };
 }
@@ -145,6 +157,34 @@ test("a rejected secret falls back to the sign-in form", async () => {
   const result = await createLocalWorld(h.deps).play("");
   assert.equal(result.ok, false);
   assert.equal(!result.ok && result.needsLogin, true);
+});
+
+test("a world whose database exists but has no account yet asks who is playing, whatever profile is kept", async () => {
+  // A first start that never finished left the database; the world says it
+  // has no owner, so the kept profile's rejected password is no account.
+  const h = harness({
+    world: { firstRun: false },
+    profile: { username: "kaleb", secret: "lost", token: "", tokenExpiresAt: "" },
+    loginFails: true,
+    awaitsOwner: true,
+  });
+  assert.deepEqual(await createLocalWorld(h.deps).play(""), { ok: true, firstSetup: true, needsName: true });
+});
+
+test("a world with an owner and no kept profile asks for a sign-in, not a name it would refuse", async () => {
+  const h = harness({ world: { firstRun: false }, awaitsOwner: false });
+  assert.deepEqual(await createLocalWorld(h.deps).play(""), { ok: false, needsLogin: true, error: "Sign in to your world." });
+});
+
+test("a made-up password is kept before the world hears it, so a lost answer still signs in next time", async () => {
+  const h = harness({ registerFails: true, tokenValid: true });
+  const world = createLocalWorld(h.deps);
+  const created = await world.createAccount({ username: "kaleb", password: "" });
+  assert.equal(created.ok, false);
+  assert.deepEqual(h.profile(), { username: "kaleb", secret: "minted-secret", token: "", tokenExpiresAt: "" });
+  h.world.firstRun = false;
+  assert.deepEqual(await world.play(""), { ok: true });
+  assert.ok(h.calls.includes("login:kaleb:minted-secret"));
 });
 
 test("status reports the world and the profile together", async () => {

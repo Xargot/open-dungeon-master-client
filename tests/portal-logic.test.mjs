@@ -27,9 +27,15 @@ test("a bundled server without the proxy never portals", () => {
 });
 
 test("the native screens need a host that answers the app's own origin", () => {
-  assert.deepEqual(nativeEligible("0.21.0"), { ok: true });
-  assert.deepEqual(nativeEligible("0.21.3"), { ok: true });
+  assert.deepEqual(nativeEligible("0.28.2"), { ok: true });
+  assert.deepEqual(nativeEligible("0.29.0"), { ok: true });
   assert.deepEqual(nativeEligible("1.2.0"), { ok: true });
+  // Hosts before one cloak at a time (server issue 412) drop where a
+  // workshop item is worn and the DM's "wear both", and their engine counts
+  // a second cloak's magic that the sheet would leave out of its AC.
+  assert.equal(nativeEligible("0.28.1").ok, false);
+  assert.equal(nativeEligible("0.21.3").ok, false);
+  assert.match(nativeEligible("0.28.1").reason, /0\.28\.2 or newer/);
   // Hosts before the redesign would drop what the new screens save (map
   // skins, stamped props) and do not send the turn budget or enemy intent.
   assert.equal(nativeEligible("0.20.0").ok, false);

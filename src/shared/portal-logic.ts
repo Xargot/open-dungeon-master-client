@@ -63,7 +63,12 @@ export function portalEligible(input: { bundled: string; remote: string }): Port
 // Raised again for the redesign (server docs/visual-overhaul-plan.md 9.0b):
 // the screens save map skins and stamped props and read the turn budget and
 // enemy intent, all of which an older host would drop without a word.
-export const NATIVE_MIN_SERVER = "0.21.0";
+// Raised again for one cloak at a time (server issue 412): the screens save
+// where a workshop item is worn (`wornOn`) and the DM's "wear both"
+// (`layered`), which an older host drops, and the sheet counts AC and magic
+// by the one-of-a-kind rules an older host's engine does not keep, so the
+// AC on the sheet would not be the AC the DM rolls against.
+export const NATIVE_MIN_SERVER = "0.28.2";
 
 export function nativeEligible(remote: string): PortalVerdict {
   const version = parseVersion(remote);

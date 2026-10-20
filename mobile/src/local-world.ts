@@ -280,6 +280,16 @@ export function createLocalWorld(deps: LocalWorldDeps) {
     return null;
   }
 
+  // Whether the running world still waits for its owner's account, as the
+  // world itself says (needsSetup on /api/auth/providers): a database left
+  // by a start that never finished is no owner. Null when it cannot say.
+  async function awaitsOwner(origin: string): Promise<boolean | null> {
+    if (!deps.fetchJson) return null;
+    const answer = await deps.fetchJson(`${origin}/api/auth/providers`, { timeoutMs: 10_000 }).catch(() => null);
+    const data = answer?.status === 200 ? (answer.data as { needsSetup?: unknown } | null) : null;
+    return typeof data?.needsSetup === "boolean" ? data.needsSetup : null;
+  }
+
   async function play(joinCode: string, path = ""): Promise<ConnectResult> {
     let origin: string;
     let freshWorld: boolean;
@@ -291,9 +301,10 @@ export function createLocalWorld(deps: LocalWorldDeps) {
     }
     const profile = await liveToken(origin);
     if (!profile) {
-      // A brand-new world asks who is playing; an existing one whose
-      // profile was lost asks for the account behind it.
-      if (freshWorld || !(await deps.loadProfile())) {
+      // A world with no owner yet asks who is playing; one whose owner
+      // exists asks for the account behind it. The world says which; the
+      // database file and the kept profile decide only when it cannot.
+      if ((await awaitsOwner(origin)) ?? (freshWorld || !(await deps.loadProfile()))) {
         return { ok: true, firstSetup: true, needsName: true };
       }
       return { ok: false, needsLogin: true, error: "Sign in to your world." };
@@ -317,6 +328,10 @@ export function createLocalWorld(deps: LocalWorldDeps) {
       // this account exists; the code is what makes this registration, and
       // not a neighbour's, the one that owns it.
       const setupCode = (await deps.plugin.status().catch(() => null))?.setupCode ?? "";
+      // A made-up password is kept before the world hears it, so a
+      // registration whose answer (or the sign-in after it) is lost leaves
+      // the profile able to sign in to the account it made.
+      if (minted) await deps.saveProfile({ username: input.username, secret: password, token: "", tokenExpiresAt: "" });
       const grant = await deps.registerAccount(origin, {
         username: input.username,
         password,
@@ -430,7 +445,7 @@ export function createLocalWorld(deps: LocalWorldDeps) {
     const fresh = (await deps.plugin.status()).firstRun;
     const origin = await start();
     let profile = await liveToken(origin);
-    if (!profile && (fresh || !(await deps.loadProfile()))) {
+    if (!profile && ((await awaitsOwner(origin)) ?? (fresh || !(await deps.loadProfile())))) {
       const made = await createAccount({ username: "player", password: "" });
       if (!made.ok) throw new Error(made.error);
       profile = await liveToken(origin);

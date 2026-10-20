@@ -67,6 +67,7 @@ import {
   whoAmI,
   worldRequest,
 } from "./odm-api";
+import { enterLocalWorld, type LocalEntry, type LocalOwnerDeps } from "./local-owner";
 import { commitWorldImport, discardWorldTransfer, exportFileName, runWorldJob } from "../shared/world-transfer";
 import { LOCAL_SERVER_ID, type ServerStore, type StoredServer } from "./servers";
 import { prepareRemoteConnection } from "./remote-preparation";
@@ -869,21 +870,31 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     return name.length >= 3 ? name : "player";
   };
 
-  // A local profile should feel like no account at all: on a fresh world the
-  // shell registers the owner itself with a random password it keeps (so an
-  // expired token re-logs silently), and the player never sees a form.
-  const provisionLocalProfile = async (): Promise<TokenGrant> => {
-    const secret = randomBytes(24).toString("base64url");
-    const grant = await registerAccount(local.origin, {
-      username: localProfileName(),
-      password: secret,
-      inviteCode: "",
-      setupCode: local.setupCode,
-    });
-    adoptLocalGrant(grant, secret);
-    await ensureLocalVoice();
-    return grant;
-  };
+  // A local profile should feel like no account at all: on a world with no
+  // owner yet the shell registers the owner itself with a random password it
+  // keeps (so an expired token re-logs silently), and the player never sees
+  // a form (src/main/local-owner.ts).
+  const localOwner = (): LocalOwnerDeps => ({
+    token: () => store.token(LOCAL_SERVER_ID),
+    tokenIsValid: (token) => tokenIsValid(local.origin, token),
+    profile: () => {
+      const entry = store.get(LOCAL_SERVER_ID);
+      return entry ? { username: entry.username, secret: store.secret(LOCAL_SERVER_ID) } : null;
+    },
+    login: (username, password) => loginForToken(local.origin, username, password),
+    register: (username, password) =>
+      registerAccount(local.origin, { username, password, inviteCode: "", setupCode: local.setupCode }),
+    awaitsOwner: async () => {
+      const probe = await probeServer(local.origin).catch(() => null);
+      return probe ? probe.needsSetup : null;
+    },
+    hold: (username, secret) => {
+      store.upsert({ id: LOCAL_SERVER_ID, origin: "local", name: "This computer", username, token: "", tokenExpiresAt: "", secret });
+    },
+    adopt: adoptLocalGrant,
+    profileName: localProfileName,
+    mintSecret: () => randomBytes(24).toString("base64url"),
+  });
 
   shellIpc.handle("local:create-account", async (_event, input: Record<string, unknown>) => {
     try {
@@ -1053,15 +1064,13 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
   const localSession = async (): Promise<string> => {
     const fresh = local.status(localHasAccount()).firstRun;
     await local.start();
-    const token = store.token(LOCAL_SERVER_ID);
-    if (token && (await tokenIsValid(local.origin, token))) return token;
-    const entry = store.get(LOCAL_SERVER_ID);
-    const secret = store.secret(LOCAL_SERVER_ID);
-    if (!entry && fresh) return (await provisionLocalProfile()).token;
-    if (!entry || !secret) throw new Error("Enter your world from the home screen first, then try again.");
-    const grant = await loginForToken(local.origin, entry.username, secret);
-    adoptLocalGrant(grant, secret);
-    return grant.token;
+    const entered = await enterLocalWorld(localOwner(), fresh);
+    if (entered.kind === "session") return entered.token;
+    if (entered.kind === "created") {
+      await ensureLocalVoice();
+      return entered.grant.token;
+    }
+    throw new Error("Enter your world from the home screen first, then try again.");
   };
   const transferPhase = (phase: string) => win.sendEvent({ kind: "world-transfer", phase });
   const saveDialog = (options: SaveDialogOptions) => {
@@ -1188,36 +1197,24 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
       new Promise((resolve) => setTimeout(resolve, LOCAL_AI_ENTRY_WAIT_MS)),
     ]);
     void localAi.startComfy().catch(() => win.sendEvent({ kind: "local-ai-progress", status: localAi.status() }));
-    let token = store.token(LOCAL_SERVER_ID);
-    if (token && !(await tokenIsValid(local.origin, token))) token = null;
-    if (!token) {
-      const entry = store.get(LOCAL_SERVER_ID);
-      const secret = store.secret(LOCAL_SERVER_ID);
-      if (entry && secret) {
-        // The session token expired; the stored profile password signs back
-        // in without bothering the player.
-        try {
-          const grant = await loginForToken(local.origin, entry.username, secret);
-          adoptLocalGrant(grant);
-          token = grant.token;
-        } catch {
-          // Password rejected (changed inside the game?); fall through.
-        }
-      }
-      if (!token && freshWorld) {
-        try {
-          await provisionLocalProfile();
-        } catch (err) {
-          return { ok: false, needsLogin: false, error: fail(err).error };
-        }
-        // Do not attach yet: the renderer offers the one-time AI choice
-        // first, then calls back in to play.
-        return { ok: true, firstSetup: true };
-      }
-      if (!token) {
-        return { ok: false, needsLogin: true, error: "Sign in to your local account." };
-      }
+    // The stored session, a fresh one from the kept profile password, or
+    // the owner's profile made now on a world that has none yet.
+    let entered: LocalEntry;
+    try {
+      entered = await enterLocalWorld(localOwner(), freshWorld);
+    } catch (err) {
+      return { ok: false, needsLogin: false, error: fail(err).error };
     }
+    if (entered.kind === "created") {
+      await ensureLocalVoice();
+      // Do not attach yet: the renderer offers the one-time AI choice
+      // first, then calls back in to play.
+      return { ok: true, firstSetup: true };
+    }
+    if (entered.kind === "needs-login") {
+      return { ok: false, needsLogin: true, error: "Sign in to your local account." };
+    }
+    const token = entered.token;
     const entry = store.get(LOCAL_SERVER_ID);
     if (!entry) {
       return { ok: false, needsLogin: true, error: "Sign in to your local account." };
