@@ -4,6 +4,7 @@ import type { FieldRect } from "../shared/deck";
 import type { ShellEvent } from "../shared/types";
 import { appIconPath } from "./app-icon";
 import { autoConfirmBluetoothPairing, wireBluetoothChooser } from "./bluetooth";
+import { editMenu } from "./edit-menu";
 import { PORTAL_TOKEN_COOKIE } from "../shared/portal-logic";
 import { isShellCookieWrite } from "./session-cookies";
 
@@ -26,6 +27,10 @@ function discordErrorText(code: string): string {
       return "Discord sign-in failed. Try again.";
   }
 }
+
+// The shell page's own background (src/renderer/style.css --background),
+// painted by every window and view before and between the pages they show.
+const SHELL_BACKGROUND = "#0a0817";
 
 function sameOrigin(url: string, origin: string): boolean {
   try {
@@ -91,7 +96,11 @@ export class ShellWindow {
       minWidth: 900,
       minHeight: 600,
       fullscreen: options.fullscreen === true,
-      backgroundColor: "#0a0817",
+      // Shown once the page has painted (ready-to-show below): a window
+      // shown at once paints white on Windows until the renderer's first
+      // frame, and backgroundColor alone did not cover that.
+      show: false,
+      backgroundColor: SHELL_BACKGROUND,
       icon: appIconPath(),
       autoHideMenuBar: true,
       webPreferences: {
@@ -118,8 +127,13 @@ export class ShellWindow {
       this.view = null;
     });
     Menu.setApplicationMenu(this.buildMenu());
-    if (options.maximize && !options.fullscreen) this.win.maximize();
-    void this.win.loadFile(path.join(__dirname, "../renderer/index.html"));
+    const win = this.win;
+    win.once("ready-to-show", () => {
+      if (win.isDestroyed()) return;
+      if (options.maximize && !options.fullscreen) win.maximize();
+      win.show();
+    });
+    void win.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
 
   // A box in the shell page's CSS pixels, in screen pixels: where Steam's
@@ -159,7 +173,8 @@ export class ShellWindow {
       height: target.bounds.height,
       fullscreen: displays.length > 1,
       autoHideMenuBar: true,
-      backgroundColor: "#0d0b1c",
+      show: false,
+      backgroundColor: SHELL_BACKGROUND,
       webPreferences: {
         preload: path.join(__dirname, "../preload/index.js"),
         contextIsolation: true,
@@ -167,6 +182,9 @@ export class ShellWindow {
       },
     });
     table.webContents.on("will-navigate", (event) => event.preventDefault());
+    table.once("ready-to-show", () => {
+      if (!table.isDestroyed()) table.show();
+    });
     table.on("closed", () => {
       this.tableWin = null;
     });
@@ -182,6 +200,7 @@ export class ShellWindow {
         label: "File",
         submenu: [{ role: "quit" }],
       },
+      editMenu(),
       {
         label: "View",
         submenu: [
@@ -284,6 +303,9 @@ export class ShellWindow {
     });
     this.view = view;
     this.currentOrigin = origin;
+    // A WebContentsView is white until its page paints, and again between
+    // the pages it navigates: dark, like the shell page under it.
+    view.setBackgroundColor(SHELL_BACKGROUND);
     this.watchForLogout(partition, origin);
     // The game UI pairs Pixels dice over Web Bluetooth; the shell provides
     // the device chooser Electron does not ship.
@@ -329,6 +351,7 @@ export class ShellWindow {
     });
     this.view = view;
     this.currentOrigin = origin;
+    view.setBackgroundColor(SHELL_BACKGROUND);
     const host = new URL(origin).hostname;
     return new Promise((resolve, reject) => {
       let settled = false;

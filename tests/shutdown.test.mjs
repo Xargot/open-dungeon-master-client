@@ -50,6 +50,7 @@ async function setupShutdown() {
     "./servers": { LOCAL_SERVER_ID: "local", ServerStore: class { storyMemory() { return ""; } deckChoice() { return ""; } } },
     "../shared/story-memory": { storyMemorySupported: () => false },
     "./tunnel": { QuickTunnel: class {} },
+    "./edit-menu": { wireContextMenus: () => {} },
     "./updater": {
       detectInstallKind: () => "test",
       packageFormatOf: () => "",

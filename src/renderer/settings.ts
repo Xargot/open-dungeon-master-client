@@ -27,8 +27,9 @@ import { describePreview, formatBytes, type WorldPreview } from "../shared/world
 import { RESET_PHRASE, describeVerify } from "../shared/diagnostics.js";
 import { forgetSteamNote, steamRows } from "./steam.js";
 import { startAppTour } from "./tour.js";
+import { forgetWorldMedia, worldMediaSection } from "./world-media.js";
 
-function section(iconName: IconName, title: string, detail: string): {
+export function section(iconName: IconName, title: string, detail: string): {
   card: HTMLElement;
   body: HTMLElement;
 } {
@@ -44,7 +45,7 @@ function section(iconName: IconName, title: string, detail: string): {
   return { card, body };
 }
 
-function row(label: string, control: HTMLElement): HTMLElement {
+export function row(label: string, control: HTMLElement): HTMLElement {
   const line = el("div", "settings-row");
   line.append(el("span", "grow", label), control);
   return line;
@@ -178,19 +179,15 @@ function deviceSection(): HTMLElement | null {
       button("secondary", "Story AI", () => renderLocalAi(true), "sparkles"),
     ),
   );
+  // Opening the page wakes the world when it sleeps.
   const account = button("secondary", "Open", () => void openLocal("/settings"), "user");
-  const accountRow = row("Your account in this world: name, avatar, password", account);
-  if (local.state !== "running") {
-    account.disabled = true;
-    accountRow.append(el("p", "hint", "Enter your world first; its settings page opens once it is awake."));
-  }
-  body.append(accountRow);
+  body.append(row("Your account in this world: name, avatar, password", account));
   const share = el("div", "settings-share");
   share.append(el("span", "settings-label", isAndroid ? "Share online" : "Sharing"));
   share.append(
     local.state === "running"
       ? shareRow()
-      : el("p", "hint", "Sharing starts once your world is awake. Enter it, then come back here or use the campaign lobby's invite dialog."),
+      : el("p", "hint", "Sharing starts once your world is awake. Open one of its tables, then come back here or use the campaign lobby's invite dialog."),
   );
   body.append(share);
   return card;
@@ -889,7 +886,10 @@ export function renderSettings(): void {
   if (again && memory.busy) return;
   if (!again && !memory.busy) memory.note = { kind: "none" };
   if (!again && !trouble.busy) trouble.note = { kind: "none" };
-  if (!again) forgetSteamNote();
+  if (!again) {
+    forgetSteamNote();
+    forgetWorldMedia();
+  }
   // Four everyday jobs, each under its own heading and one tap away from
   // the row at the top: what this device plays like, the world it hosts,
   // the hosts it signs in to, and help and repair (which is never asked of
@@ -905,8 +905,8 @@ export function renderSettings(): void {
       {
         id: "settings-world",
         label: `Your world on this ${isAndroid ? "device" : "computer"}`,
-        detail: "The world this app hosts: who plays there, its Story AI, its memory, and moving it.",
-        cards: [deviceSection(), memorySection(), transferSection()],
+        detail: "The world this app hosts: who plays there, its Story AI, its narration and sound, its memory, and moving it.",
+        cards: [deviceSection(), worldMediaSection(), memorySection(), transferSection()],
       },
       {
         id: "settings-accounts",

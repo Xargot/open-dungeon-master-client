@@ -878,6 +878,11 @@
   color: #f87171;
   background: rgba(248, 113, 113, 0.12);
 }
+.tt-slot-actions .tt-slot-copy:hover:not(:disabled),
+.tt-slot-actions .tt-slot-copy:focus-visible {
+  color: var(--tt-gold-pale);
+  background: rgba(227, 193, 92, 0.12);
+}
 .tt-slot-actions .icon-btn:active:not(:disabled) { transform: scale(0.9); }
 .tt-slot-actions .icon-btn:disabled { opacity: 0.5; cursor: progress; }
 .tt-slots-error { text-align: right; }
@@ -1585,6 +1590,7 @@ html[data-theme="light"] .tt-first > .topbar.tt-header .wordmark { color: var(--
   color: var(--ink-300);
   font-size: 0.9rem;
 }
+.settings-row[hidden] { display: none; }
 .settings-row .grow { flex: 1 1 14rem; min-width: 0; }
 .settings-row .hint { flex-basis: 100%; margin: 0; }
 .settings-note { margin: 0; color: var(--ink-500); font-size: 0.85rem; }
@@ -1601,6 +1607,8 @@ html[data-theme="light"] .tt-first > .topbar.tt-header .wordmark { color: var(--
 .memory-line p { margin: 0; }
 .memory-line > * + * { margin-top: 0.6rem; }
 .memory-working { display: flex; align-items: center; gap: 0.5rem; }
+/* Narration and sound: a Kokoro start command, copied whole. */
+.media-command { display: block; margin-top: 0.3rem; font-family: var(--font-mono); font-size: 0.78rem; color: var(--ink-400); overflow-wrap: anywhere; }
 /* Move your world: the import question's two answers, side by side. */
 .transfer-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
 @media (prefers-reduced-motion: reduce) {

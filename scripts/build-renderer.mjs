@@ -124,29 +124,56 @@ function serverCssPlugin() {
   };
 }
 
+// Next itself never enters the game bundle: each of its modules the screens
+// import has a shim in the alias map. Where the server checkout has its
+// node_modules (a developer's machine, ci.yml) an import with no shim would
+// otherwise resolve to the real Next and build, while the release jobs check
+// the server out bare and fail on it (next/dynamic, client 0.20.0). With
+// this, every build fails the same way and names the missing shim.
+function nextShimsOnlyPlugin(alias) {
+  return {
+    name: "odm-next-shims-only",
+    setup(build) {
+      build.onResolve({ filter: /^next(\/|$)/ }, (args) =>
+        alias[args.path]
+          ? undefined
+          : {
+              errors: [
+                {
+                  text: `"${args.path}" has no game-screen shim: add one to src/renderer/game/shims and to the alias map in scripts/build-renderer.mjs`,
+                },
+              ],
+            },
+      );
+    },
+  };
+}
+
 // The game bundle's view of the world: React is Preact, Next's pieces are
 // the shims, "@/" is the server's src.
 export function gameBuildOptions(server) {
   const preact = preactDir();
+  const alias = {
+    react: path.join(shims, "react.js"),
+    "react-dom": path.join(shims, "react-dom.js"),
+    "react-dom/client": path.join(preact, "compat"),
+    "react/jsx-runtime": path.join(preact, "jsx-runtime"),
+    "react/jsx-dev-runtime": path.join(preact, "jsx-runtime"),
+    // Every "preact" and "preact/..." import, the JSX runtime included.
+    preact,
+    "next/dynamic": path.join(shims, "next-dynamic.tsx"),
+    "next/link": path.join(shims, "next-link.tsx"),
+    "next/navigation": path.join(shims, "next-navigation.ts"),
+    "node:crypto": path.join(shims, "node-crypto.ts"),
+    "@radix-ui/react-portal": path.join(shims, "radix-portal.tsx"),
+    "@": path.join(server, "src"),
+  };
   return {
     ...rendererBuildOptions,
     format: "esm",
     splitting: true,
-    plugins: [localAssetsPlugin(server), serverCssPlugin()],
-    alias: {
-      react: path.join(shims, "react.js"),
-      "react-dom": path.join(shims, "react-dom.js"),
-      "react-dom/client": path.join(preact, "compat"),
-      "react/jsx-runtime": path.join(preact, "jsx-runtime"),
-      "react/jsx-dev-runtime": path.join(preact, "jsx-runtime"),
-      // Every "preact" and "preact/..." import, the JSX runtime included.
-      preact,
-      "next/link": path.join(shims, "next-link.tsx"),
-      "next/navigation": path.join(shims, "next-navigation.ts"),
-      "node:crypto": path.join(shims, "node-crypto.ts"),
-      "@radix-ui/react-portal": path.join(shims, "radix-portal.tsx"),
-      "@": path.join(server, "src"),
-    },
+    plugins: [localAssetsPlugin(server), serverCssPlugin(), nextShimsOnlyPlugin(alias)],
+    alias,
     define: { "process.env.NODE_ENV": '"production"' },
     // The server's sources import from its own node_modules (radix, lucide,
     // zod...); the same packages are installed here, so resolution is

@@ -13,6 +13,10 @@ export interface TourStep {
   // Shown instead of body when the step landed on a later anchor than its
   // first choice (the tile is not on screen yet, so the hero stands in).
   fallbackBody?: string;
+  // Exact wording for a later anchor that is a real door rather than a
+  // stand-in: New campaign where no Quick start is offered (a world with no
+  // AI storyteller), or the drawer's Story AI. Beats fallbackBody.
+  anchorBodies?: Record<string, string>;
 }
 
 export interface ResolvedStep {
@@ -40,7 +44,7 @@ export function resolveSteps(
     out.push({
       step,
       anchor: step.anchors[index] ?? "",
-      body: index > 0 && step.fallbackBody ? step.fallbackBody : step.body,
+      body: step.anchorBodies?.[step.anchors[index] ?? ""] ?? (index > 0 && step.fallbackBody ? step.fallbackBody : step.body),
     });
   }
   return out;

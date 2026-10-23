@@ -2,6 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <!-- Dark before the stylesheets arrive: a reload (the View menu, F5, the
+       table screen opening) otherwise paints Chromium's white page for a
+       frame or two before style.css lands, a white flicker on Windows. The
+       colour is --background in style.css. -->
+  <meta name="color-scheme" content="dark">
+  <style>html { background: #0a0817; color-scheme: dark; }</style>
   <!-- img-src allows https and http so campaign cover art can come from the
        hosts the player has campaigns on (the device world is plain http).
        frame-src does the same for an addon's board view, which the table

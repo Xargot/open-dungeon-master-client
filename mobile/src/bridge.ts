@@ -53,6 +53,7 @@ import {
   coverRequestUrl,
   LOCAL_HOST_ID,
   type HomeCache,
+  tableLookupOrigins,
 } from "../../src/shared/home-feed-logic";
 import { relocateWorld } from "../../src/shared/relocate";
 import {
@@ -305,6 +306,25 @@ async function getAdminSettings(origin: string, token: string): Promise<unknown>
 // world's server asks the key's provider in turn, so it is given longer.
 async function postAdmin(origin: string, token: string, path: string, body: object): Promise<unknown> {
   const reply = await http(origin, path, { method: "POST", token, body, timeoutMs: 30_000 });
+  if (reply.status !== 200) throw new Error(errorText(reply, "The world's server refused the request."));
+  return reply.data;
+}
+
+// Whether a server has a table under a room code: its public join preview,
+// the invite page's own question (a miss counts against that address's
+// lockout there, so it is asked once per typed code).
+async function tableAt(origin: string, code: string): Promise<boolean> {
+  try {
+    const reply = await http(origin, `/api/campaigns/join/preview?code=${encodeURIComponent(code)}`, { timeoutMs: 5_000 });
+    return reply.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+// The sound library's state (src/shared/world-media.ts).
+async function getAdmin(origin: string, token: string, path: string): Promise<unknown> {
+  const reply = await http(origin, path, { token });
   if (reply.status !== 200) throw new Error(errorText(reply, "The world's server refused the request."));
   return reply.data;
 }
@@ -711,6 +731,7 @@ const localWorld = createLocalWorld({
   patchAdminSettings,
   getAdminSettings,
   postAdmin,
+  getAdmin,
   async plantSession(origin, token) {
     await clearPortalCookies(origin);
     await CapacitorCookies.setCookie({ url: origin, key: "odm_session", value: token });
@@ -1569,6 +1590,20 @@ const bridge: OdmBridge = {
         await handleJoinLink({ origin: found, code: bare.table });
         return true;
       }
+      // Not a shared world's table: one on a server this app is signed in
+      // to, which the registry never hears of (tableLookupOrigins), as the
+      // desktop shell asks it.
+      if (bare.table) {
+        const origins = tableLookupOrigins(
+          (await loadServers()).map((server) => ({ origin: server.origin, lastUsedAt: server.lastUsedAt, signedIn: Boolean(server.token) })),
+        );
+        const answers = await Promise.all(origins.map((origin) => tableAt(origin, bare.table)));
+        const home = origins.find((_origin, index) => answers[index]);
+        if (home) {
+          await handleJoinLink({ origin: home, code: bare.table });
+          return true;
+        }
+      }
       if (bare.hostOrigin) {
         try {
           await probeOrigin(bare.hostOrigin);
@@ -1743,6 +1778,10 @@ const bridge: OdmBridge = {
   localConfigureAi: (setup) => localWorld.configureAi(setup),
   localAiSaved: () => localWorld.aiSaved(),
   localAiModels: (apiKey) => localWorld.aiModels(String(apiKey ?? "")),
+  localNarration: () => localWorld.narration(),
+  localSetNarration: (choice) => localWorld.setNarration(choice),
+  localNarrationSample: () => localWorld.sample(),
+  localSoundLibrary: (install) => localWorld.sounds(install === true),
   // Agent programs (Claude Code, Codex, ...) are started by a desktop's own
   // server; a phone has none to start.
   localHarnessStatus: async () => ({ ok: false, error: "Agent programs run on a computer, not a phone." }),

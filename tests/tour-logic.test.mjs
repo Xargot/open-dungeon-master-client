@@ -88,3 +88,18 @@ test("a store that throws counts as seen, so a broken storage never nags", () =>
   assert.equal(tourSeen(broken, "app"), true);
   assert.doesNotThrow(() => markTourSeen(broken, "app"));
 });
+
+test("a later anchor that is a real door gets its own wording, not the stand-in's", () => {
+  const step = {
+    id: "campaign",
+    title: "Start a campaign",
+    body: "Quick start or New campaign.",
+    anchors: ["tile-quick-start", "tile-new-campaign", "hero"],
+    fallbackBody: "Begin your world here.",
+    anchorBodies: { "tile-new-campaign": "New campaign builds your own table." },
+  };
+  const on = (...present) => resolveSteps([step], (anchor) => present.includes(anchor))[0].body;
+  assert.equal(on("tile-quick-start", "tile-new-campaign"), "Quick start or New campaign.");
+  assert.equal(on("tile-new-campaign", "hero"), "New campaign builds your own table.");
+  assert.equal(on("hero"), "Begin your world here.");
+});

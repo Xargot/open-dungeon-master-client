@@ -9,7 +9,7 @@ import { renderLocalAi } from "./local-ai.js";
 import { playLocal } from "./local.js";
 import { connectServer, forgetServer, renderAdd, renderDeleteAccount, scanInvite } from "./servers.js";
 import { renderSettings } from "./settings.js";
-import { DEVICE, isAndroid, state } from "./state.js";
+import { DEVICE, isAndroid, setPreferredHost, state } from "./state.js";
 import type { HomeHost, ServerSummary } from "../shared/types";
 
 const root = document.getElementById("app") as HTMLDivElement;
@@ -155,9 +155,12 @@ function hosts(): HTMLElement {
   if (state.local.state !== "unavailable") {
     const detail = state.local.username || (state.local.firstRun ? "Not started yet" : "");
     wrap.append(
-      hostRow(isAndroid ? "globe" : "monitor", DEVICE, detail, localDotStatus(), (btn) =>
-        void playLocal(btn),
-      ).row,
+      // The world's home is the app's: tapping it makes it the host the
+      // title screen's menu opens on, and wakes it.
+      hostRow(isAndroid ? "globe" : "monitor", DEVICE, detail, localDotStatus(), (btn) => {
+        if (!state.local.firstRun) setPreferredHost("local");
+        void playLocal(btn);
+      }).row,
     );
   }
   for (const server of state.servers) wrap.append(serverRow(server));

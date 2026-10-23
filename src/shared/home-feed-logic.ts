@@ -32,6 +32,20 @@ export function hostKindFor(origin: string): "server" | "tunnel" {
   return isTunnelOrigin(origin) ? "tunnel" : "server";
 }
 
+// The servers a typed room code is asked of when the broker's registry has
+// no table under it: a server somebody runs never publishes its tables
+// there (only the apps' worlds do, and only while shared), so its own
+// players would otherwise meet "no table is online with that code". Only
+// saved servers this app holds a session for, never a friend's world (it
+// publishes while it shares, and an old tunnel address only times out),
+// the most recently used first.
+export function tableLookupOrigins(servers: ReadonlyArray<{ origin: string; lastUsedAt: string; signedIn: boolean }>): string[] {
+  return servers
+    .filter((server) => server.signedIn && !isTunnelOrigin(server.origin))
+    .sort((a, b) => (b.lastUsedAt || "").localeCompare(a.lastUsedAt || ""))
+    .map((server) => server.origin);
+}
+
 // One host as the shell knows it before any request goes out. token is ""
 // when the shell holds no live session for it.
 export interface HostInput {

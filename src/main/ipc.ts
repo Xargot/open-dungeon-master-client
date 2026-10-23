@@ -10,6 +10,7 @@ import type {
   HarnessCard,
   HarnessStatusResult,
   LocalStatus,
+  NarrationChoice,
   Result,
   ServerSummary,
   ShellShareStatus,
@@ -45,7 +46,8 @@ import {
   type FieldRect,
 } from "../shared/deck";
 import { speechStatusFrom } from "../shared/speech";
-import { coverRequestUrl, type HostInput } from "../shared/home-feed-logic";
+import { narrationSample, readNarration, saveNarration, soundLibrary, type WorldAdmin } from "../shared/world-media";
+import { coverRequestUrl, tableLookupOrigins, type HostInput } from "../shared/home-feed-logic";
 import { landingPath, safeInnerPath } from "../shared/open-path";
 import { createDesktopHomeFeed, fetchCoverImage } from "./home-feed";
 import type { LocalAiManager } from "./local-ai/manager";
@@ -54,6 +56,7 @@ import type { LocalServer } from "./local-server";
 import {
   deleteAccount,
   loginForToken,
+  getAdmin,
   getAdminSettings,
   getHarnessStatus,
   patchAdminSettings,
@@ -62,6 +65,7 @@ import {
   registerAccount,
   sessionState,
   speechEngine,
+  tableAt,
   tokenIsValid,
   type TokenGrant,
   whoAmI,
@@ -578,6 +582,20 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
         await handleJoinLink({ origin: found, code: bare.table });
         return true;
       }
+      // Not a shared world's table: one on a server this app is signed in
+      // to, which the registry never hears of (src/shared/home-feed-logic.ts
+      // tableLookupOrigins). Asked together; the most recent that has it wins.
+      if (bare.table) {
+        const origins = tableLookupOrigins(
+          store.list().map((server) => ({ origin: server.origin, lastUsedAt: server.lastUsedAt, signedIn: Boolean(store.token(server.id)) })),
+        );
+        const answers = await Promise.all(origins.map((origin) => tableAt(origin, bare.table)));
+        const home = origins.find((_origin, index) => answers[index]);
+        if (home) {
+          await handleJoinLink({ origin: home, code: bare.table });
+          return true;
+        }
+      }
       if (bare.hostOrigin) {
         try {
           await probeServer(bare.hostOrigin);
@@ -1072,7 +1090,62 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
     throw new Error("Enter your world from the home screen first, then try again.");
   };
-  const transferPhase = (phase: string) => win.sendEvent({ kind: "world-transfer", phase });
+
+  // Narration and the sound library (src/shared/world-media.ts), from
+  // Settings: the world woken when it is asleep and asked through the
+  // routes its own admin page uses.
+  const worldAdmin = async (): Promise<WorldAdmin> => {
+    const token = await localSession();
+    const origin = local.origin;
+    if (!origin) throw new Error("Your world did not start.");
+    return {
+      settings: () => getAdminSettings(origin, token),
+      patch: (patch) => patchAdminSettings(origin, token, patch),
+      post: (pathname, body) => postAdmin(origin, token, pathname, body),
+      get: (pathname) => getAdmin(origin, token, pathname),
+    };
+  };
+  shellIpc.handle("local:narration", async () => {
+    try {
+      return { ok: true, narration: await readNarration(await worldAdmin()) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  shellIpc.handle("local:set-narration", async (_event, raw: unknown) => {
+    try {
+      const kind = (raw as { kind?: unknown } | null)?.kind;
+      const choice: NarrationChoice | null =
+        kind === "openai" || kind === "off"
+          ? { kind }
+          : kind === "kokoro"
+            ? { kind, url: str((raw as { url?: unknown }).url, 500) }
+            : null;
+      if (!choice) return fail(new Error("Pick a voice first."));
+      const saved = await saveNarration(choice, await worldAdmin());
+      if ("error" in saved) return fail(new Error(saved.error));
+      return { ok: true, narration: saved.narration, ...(saved.notice ? { notice: saved.notice } : {}) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  shellIpc.handle("local:narration-sample", async () => {
+    try {
+      const sample = await narrationSample(await worldAdmin());
+      return "error" in sample ? fail(new Error(sample.error)) : { ok: true, audio: sample.audio };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  shellIpc.handle("local:sound-library", async (_event, install: unknown) => {
+    try {
+      return { ok: true, library: await soundLibrary(install === true, await worldAdmin()) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  const transferPhase =(phase: string) => win.sendEvent({ kind: "world-transfer", phase });
   const saveDialog = (options: SaveDialogOptions) => {
     const parent = win.dialogParent();
     return parent ? dialog.showSaveDialog(parent, options) : dialog.showSaveDialog(options);

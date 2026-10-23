@@ -45,6 +45,8 @@ const ROUTES: Route[] = [
   { pattern: "/characters/:characterId", load: () => import("@/app/characters/[characterId]/page"), skeleton: "sheet" },
   // The library's build editor and "Duplicate and edit" (server issue 229).
   { pattern: "/characters/:characterId/edit", load: () => import("@/app/characters/[characterId]/edit/page") },
+  // The hero page a new character's first save lands on (server PR #442).
+  { pattern: "/characters/:characterId/ready", load: () => import("@/app/characters/[characterId]/ready/page") },
   { pattern: "/workshop", load: () => import("@/app/workshop/page"), skeleton: "shelf" },
   { pattern: "/workshop/:workshopId", load: () => import("@/app/workshop/[workshopId]/page"), skeleton: "hub" },
   { pattern: "/settings", load: () => import("@/app/settings/page") },
@@ -173,10 +175,11 @@ function GameApp({ router, root, onLeave }: { router: GameRouter; root: HTMLElem
   const Page = pageFor(matched.route);
   // The query is not part of the key: a filter or tab in the address updates
   // the page it belongs to instead of tearing it down and starting it again.
+  // A refresh is: it mounts the page afresh, so the page loads its data again.
   return (
     <>
       <Boundary
-        key={routeKey}
+        key={`${routeKey}#${router.refreshes}`}
         onError={(error) => {
           console.error("game page failed", error);
           onLeave(location.pathname + location.search);
@@ -209,6 +212,9 @@ export interface GameOptions {
   // A path with no native page, or a full URL off the host: the shell
   // opens it the old way (web view) or in the browser.
   onLeave(url: string): void;
+  // The host's bare home page, when the shell's title screen stands in for
+  // it (GameRouter.onHome).
+  onHome?(): void;
 }
 
 // A plain anchor in a host page (not a next/link) would take the whole
@@ -235,6 +241,7 @@ export function mountGame(root: HTMLElement, options: GameOptions): GameMount {
   installRuntime(client);
   const router = new GameRouter(options.path);
   router.onLeave = options.onLeave;
+  router.onHome = options.onHome ?? null;
   const onClick = (event: MouseEvent): void => {
     const url = linkTarget(event, client.origin);
     if (url === null) return;

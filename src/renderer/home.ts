@@ -11,6 +11,7 @@
 import {
   buildGroups,
   canDeleteFromHome,
+  canDuplicateFromHome,
   chapterLine,
   deviceStatusLine,
   enterLabel,
@@ -370,8 +371,10 @@ async function repairLocal(btn: HTMLButtonElement): Promise<void> {
 }
 
 // The device world before it has a campaign to continue: first run,
-// starting, a crash, or simply ready.
-function localBlock(): HTMLElement {
+// starting, a crash, or simply ready. Ready, it is the world's own home
+// (the app never shows that page: it would repeat this one), so the door
+// is the one that page offers: forge a new world.
+function localBlock(host: HomeHost | null): HTMLElement {
   const local = state.local;
   const block = el("div", "tt-title-block");
   block.dataset.tour = "hero";
@@ -396,18 +399,27 @@ function localBlock(): HTMLElement {
     );
     if (local.state === "starting") actions.append(spinner(), badge("Starting"));
     else actions.append(enterButton("Start playing", (btn) => void playLocal(btn)));
+  } else if (host?.lastSeenAt && host.campaigns.length === 0) {
+    // Known to be empty: the same words the world's home says.
+    block.append(reveal(eyebrow("Your first tale"), 140), reveal(goldTitle("Every campaign starts with an empty table.", true), 220));
+    block.append(reveal(el("p", "tt-lede", "Create one and invite your friends, or join theirs with a room code below."), 420));
+    if (local.state === "starting") actions.append(spinner(), badge("Starting"));
+    else actions.append(enterButton("Forge a new world", (btn) => void playLocal(btn, "/?new=1")));
   } else {
     block.append(reveal(eyebrow(`Your world on this ${device}`), 140), reveal(goldTitle(DEVICE, true), 220));
     const who = el("p", "tt-lede");
     if (local.username) {
-      who.append(document.createTextNode("Playing as "), el("strong", "", local.username));
-      who.append(document.createTextNode(local.serverVersion ? `. Offline world ready, server ${local.serverVersion}.` : "."));
+      who.append(document.createTextNode("Playing as "), el("strong", "", local.username), document.createTextNode("."));
     } else {
       who.textContent = "Offline world ready.";
     }
     block.append(reveal(who, 420));
     if (local.state === "starting") actions.append(spinner(), badge("Starting"));
-    else actions.append(enterButton("Enter your world", (btn) => void playLocal(btn)));
+    // Awake without a profile here (portal mode starts the world to serve a
+    // friend's table, or the sign-in lapsed): the shell's own name or
+    // sign-in screen comes first, as it always did.
+    else if (!local.hasAccount) actions.append(enterButton("Start playing", (btn) => void playLocal(btn)));
+    else actions.append(enterButton("Forge a new world", (btn) => void playLocal(btn, "/?new=1")));
   }
   block.append(reveal(actions, 640));
   return block;
@@ -454,13 +466,13 @@ function welcomeBlock(): HTMLElement {
   return block;
 }
 
-function titleBlock(pick: ContinuePick | null): HTMLElement {
+function titleBlock(pick: ContinuePick | null, feed: HomeFeed): HTMLElement {
   if (pick) return continueBlock(pick);
   if (state.local.state === "unavailable") {
     const [latest] = state.servers;
     return latest ? serverBlock(latest) : welcomeBlock();
   }
-  return localBlock();
+  return localBlock(feed.hosts.find((host) => host.kind === "local") ?? null);
 }
 
 // ---------- the menu ----------
@@ -596,9 +608,24 @@ function recapPanel(pick: ContinuePick): HTMLElement {
 
 // ---------- save slots: your tables, by host ----------
 
-// What the last Delete from a slot answered when it failed, shown above the
-// slots until the next one is tried.
+// What the last Delete or Duplicate from a slot answered when it failed,
+// shown above the slots until the next one is tried.
 let slotError = "";
+
+// The device world asleep, with an owner: it wakes when one of its tables
+// or a slot action needs it, so its kept list counts like a live one.
+function localWakes(): boolean {
+  return state.local.state === "stopped" && !state.local.firstRun && state.local.hasAccount;
+}
+
+// A slot action on the device world wakes it first; there is no "enter
+// your world" step any more to have done that.
+async function wakeFor(host: HomeHost): Promise<void> {
+  if (host.kind !== "local" || state.local.state === "running") return;
+  const started = await window.odm.localStart();
+  if (!started.ok) throw new Error(started.error);
+  state.local = started.status;
+}
 
 // Delete from a save slot: the same call and the same warning as the
 // website's home, made with this host's session. The table on the title
@@ -614,11 +641,31 @@ async function deleteFromSlot(host: HomeHost, campaign: HomeCampaign, btn: HTMLB
   btn.disabled = true;
   slotError = "";
   try {
+    await wakeFor(host);
     const client = await hostClient(host.id);
     if (!client) throw new Error(`Sign in to ${hostName(host)} again to delete "${campaign.title}".`);
     await client.json(`/api/campaigns/${encodeURIComponent(campaign.id)}`, { method: "DELETE" });
   } catch (error) {
     slotError = error instanceof Error && error.message ? error.message : `Could not delete "${campaign.title}".`;
+  }
+  await refreshFeed();
+  if (state.screenName === "home") renderHome();
+}
+
+// Duplicate from a save slot: the website's slot action (a new campaign
+// with the old one's world, prep and settings, nobody seated), made with
+// this host's session. The world's own home, which offered it before, is
+// not shown in the app.
+async function duplicateFromSlot(host: HomeHost, campaign: HomeCampaign, btn: HTMLButtonElement): Promise<void> {
+  btn.disabled = true;
+  slotError = "";
+  try {
+    await wakeFor(host);
+    const client = await hostClient(host.id);
+    if (!client) throw new Error(`Sign in to ${hostName(host)} again to copy "${campaign.title}".`);
+    await client.json(`/api/campaigns/${encodeURIComponent(campaign.id)}/clone`, { method: "POST", body: {} });
+  } catch (error) {
+    slotError = error instanceof Error && error.message ? error.message : `Could not make a copy of "${campaign.title}".`;
   }
   await refreshFeed();
   if (state.screenName === "home") renderHome();
@@ -651,12 +698,15 @@ function slot(group: HostGroup, row: CampaignRow): HTMLElement {
   door.append(el("span", "tt-slot-meta", meta || hostName(host)));
   door.title = `${campaign.title} on ${hostName(host)}`;
   cell.append(door);
-  if (canDeleteFromHome(host, campaign)) {
-    // Beside the door, not inside it: a button cannot hold a button.
-    const actions = el("span", "tt-slot-actions");
-    actions.append(iconButton("trash", "Delete this campaign", (btn) => void deleteFromSlot(host, campaign, btn), "tt-slot-action tt-slot-delete"));
-    cell.append(actions);
+  // Beside the door, not inside it: a button cannot hold a button.
+  const actions = el("span", "tt-slot-actions");
+  if (canDuplicateFromHome(host, campaign, localWakes())) {
+    actions.append(iconButton("copy", "Duplicate this campaign", (btn) => void duplicateFromSlot(host, campaign, btn), "tt-slot-action tt-slot-copy"));
   }
+  if (canDeleteFromHome(host, campaign, localWakes())) {
+    actions.append(iconButton("trash", "Delete this campaign", (btn) => void deleteFromSlot(host, campaign, btn), "tt-slot-action tt-slot-delete"));
+  }
+  if (actions.childElementCount) cell.append(actions);
   return cell;
 }
 
@@ -788,7 +838,7 @@ function deviceBlock(localIsHero: boolean): HTMLElement | null {
         ? "Waking your world..."
         : local.state === "error"
           ? local.error || "The offline world could not start."
-          : "Asleep until you enter it. Friends can join once it is awake and shared.";
+          : "Asleep until you open one of its tables. Friends can join once it is awake and shared.";
   text.append(el("p", "tt-below-lede", detail));
   head.append(text);
   const actions = el("div", "tt-device-actions");
@@ -796,7 +846,7 @@ function deviceBlock(localIsHero: boolean): HTMLElement | null {
     const storyAi = ghostButton("Story AI", () => renderLocalAi(true), "sparkles");
     storyAi.dataset.tour = "story-ai";
     actions.append(storyAi);
-    if (!localIsHero) actions.append(ghostButton("Enter your world", (btn) => void playLocal(btn), "play"));
+    if (!localIsHero) actions.append(ghostButton("New campaign here", (btn) => void playLocal(btn, "/?new=1"), "plus"));
   }
   head.append(actions);
   panel.append(head);
@@ -878,7 +928,9 @@ function joinPanel(): { panel: HTMLElement; focus: () => void } {
 export function renderHome(): void {
   state.screenName = "home";
   const feed = reconcileLocal(state.feed ?? EMPTY_FEED, state.local);
-  const pick = pickContinueCampaign(feed);
+  // An asleep world wakes when one of its tables opens, so its last table
+  // is continued from here like any other.
+  const pick = pickContinueCampaign(feed, localWakes());
   const primary = pickPrimaryHost(feed, pick, preferredHost());
   const localIsHero = !pick && state.local.state !== "unavailable";
   const join = joinPanel();
@@ -895,7 +947,7 @@ export function renderHome(): void {
   const stage = el("section", "tt-stage");
   stage.setAttribute("aria-label", "Title screen");
   const left = el("div", "tt-stage-left");
-  left.append(titleBlock(pick), menu(primary, feed, join.focus), statusLine());
+  left.append(titleBlock(pick, feed), menu(primary, feed, join.focus), statusLine());
   const right = el("div", "tt-stage-right");
   if (pick) right.append(recapPanel(pick));
   right.append(slots(feed, primary));

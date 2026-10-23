@@ -7,7 +7,7 @@ import { backLink, formCard, intro, show } from "./chrome.js";
 import { badge, button, copyText, el, input, spinner } from "./dom.js";
 import { tryOpenNativeLocal } from "./game-screen.js";
 import { renderHome } from "./home.js";
-import { renderLocalAi } from "./local-ai.js";
+import { startGuidedSetup } from "./local-ai.js";
 import { renderSettings } from "./settings.js";
 import type { TunnelStatus } from "../shared/types.js";
 import { isAndroid, localPlayAt, refresh, state } from "./state.js";
@@ -33,9 +33,9 @@ export async function playLocal(btn: HTMLButtonElement | null, path = ""): Promi
       return;
     }
     if (result.firstSetup) {
-      // The shell just created the local profile; the only choice worth a
-      // screen is who tells the story.
-      renderLocalAi();
+      // The shell just created the local profile: the guided setup asks who
+      // tells the story, then how the tables sound.
+      startGuidedSetup();
       return;
     }
     state.joinIntent = null;
@@ -252,7 +252,7 @@ export function renderLocalAccount(mode: "create" | "login"): void {
       }
       state.local = result.status;
       if (mode === "create") {
-        renderLocalAi();
+        startGuidedSetup();
       } else {
         void playLocal(null);
       }
@@ -299,7 +299,7 @@ export function renderLocalName(): void {
           return;
         }
         state.local = result.status;
-        renderLocalAi();
+        startGuidedSetup();
       });
   });
   show(

@@ -13,7 +13,7 @@ import { el } from "./dom.js";
 import { renderHelp } from "./help.js";
 import { renderHome } from "./home.js";
 import { renderSettings } from "./settings.js";
-import { connectAt, localPlayAt, refresh, state, tunnelWatchers } from "./state.js";
+import { connectAt, localPlayAt, refresh, refreshFeed, state, tunnelWatchers } from "./state.js";
 
 interface GameMount {
   router: {
@@ -36,6 +36,7 @@ interface GameModule {
       session: { origin: string; token: string };
       path: string;
       onLeave(url: string): void;
+      onHome?(): void;
     },
   ): GameMount;
 }
@@ -155,8 +156,12 @@ export function unmountGame(): void {
   delete (window as { odmShell?: unknown }).odmShell;
 }
 
+// Back to the app's home from a world's page (its App home, or the world's
+// own home page, which the app's stands in for). The tables are asked again
+// too: the page may have just deleted, left or made one.
 function goHome(): void {
   void refresh().then(() => renderHome());
+  void refreshFeed();
 }
 
 // A page the native screens do not have, or an address off the host: the
@@ -250,6 +255,16 @@ export async function tryOpenNative(
       unmountGame();
       leaveFor(hostId, url);
     },
+    // The device world's home is the app's home: its own title screen
+    // would only repeat this one's menu, save slots and join boxes.
+    ...(hostId === LOCAL
+      ? {
+          onHome: () => {
+            unmountGame();
+            goHome();
+          },
+        }
+      : {}),
   });
   mountedHost = hostId;
   // The Android bridge reads this to fetch a host document for the system
@@ -267,12 +282,26 @@ export function mountedHostId(): string {
 
 // The device world, natively: only once it has a profile and is awake.
 export async function tryOpenNativeLocal(joinCode: string | undefined, path: string): Promise<boolean> {
-  if (state.local.state === "unavailable" || state.local.firstRun || !state.local.hasAccount) return false;
+  if (state.local.state === "unavailable") return false;
+  // The renderer's copy trails a profile just made (the guided setup ends
+  // here), and with it the world opened in the old web view; the shell's
+  // own answer decides.
+  if (state.local.firstRun || !state.local.hasAccount) {
+    await refresh().catch(() => undefined);
+    if (state.local.firstRun || !state.local.hasAccount) return false;
+  }
   if (!nativeEligible(state.local.serverVersion).ok) return false;
   // Waking the world can take a moment; the bundle loads meanwhile.
   preloadGame();
   const started = await window.odm.localStart();
   if (!started.ok) return false;
   state.local = started.status;
-  return tryOpenNative(LOCAL, landingPath(joinCode ?? "", path), started.status.serverVersion);
+  const landing = landingPath(joinCode ?? "", path);
+  // Nowhere in particular: the world is awake, and its home is this one.
+  if (landing === "/") {
+    unmountGame();
+    goHome();
+    return true;
+  }
+  return tryOpenNative(LOCAL, landing, started.status.serverVersion);
 }

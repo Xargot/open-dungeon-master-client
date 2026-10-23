@@ -9,6 +9,7 @@ import { renderHome } from "./home.js";
 import { renderSettings } from "./settings.js";
 import { isAndroid, refresh, state } from "./state.js";
 import { startAppTour } from "./tour.js";
+import { LOCAL_AI_MINIMUM_GB } from "../shared/ai-setup.js";
 
 // The full guide on the site, kept current between app releases.
 export const GUIDE_URL = "https://opendungeonmaster.com/guide/";
@@ -34,7 +35,7 @@ export function renderHelp(): void {
     : " An invite's QR code carries the same link; on a phone the app scans it.";
   const localAi = isAndroid
     ? ""
-    : " On a desktop with a capable GPU, Story AI can also install a local model so nothing leaves your machine.";
+    : ` On a desktop with at least ${LOCAL_AI_MINIMUM_GB} GB of graphics memory, Story AI can also install a local model so nothing leaves your machine.`;
 
   const actions = el("div", "guide-actions");
   actions.append(
@@ -78,7 +79,7 @@ export function renderHelp(): void {
     section(
       isAndroid ? "globe" : "monitor",
       `Your world on this ${device}`,
-      `The app can host a world itself: no server needed. Enter it from the home screen and it wakes up; close the app and it sleeps. Your campaigns, characters and pictures stay on this ${device}.`,
+      `The app can host a world itself: no server needed. It wakes when you open one of its tables from the home screen, and sleeps when you close the app. Your campaigns, characters and pictures stay on this ${device}.`,
       isAndroid
         ? `Your world answers on this phone alone until you share it. Share on this Wi-Fi and friends in the same room join at the address shown, with no internet at all; anyone on that network can reach the sign-in page while it is on. Share online and the app opens a public address so friends anywhere can join while the app runs. Copy the address, send it through your phone's share sheet, or show its QR code for a camera to scan.`
         : `Share on this Wi-Fi and friends in the same room join at the address shown, with no internet at all: type it into a browser or the app, or scan its QR code. The address is plain http on your own network, so anyone on that network can reach the sign-in page while it is on. Share online and the app opens a public address so friends anywhere can join while the app runs.`,

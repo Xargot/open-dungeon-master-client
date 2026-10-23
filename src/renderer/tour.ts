@@ -18,6 +18,7 @@ import { isAndroid, state } from "./state.js";
 export const APP_TOUR_ID = "app";
 
 const localModels = isAndroid ? "" : ", or a local model installed on this machine";
+const storyAiBody = `Story AI is what the world on this device plays with: it shows what is set now, then offers no AI, an AI on your OpenAI API key${localModels}. Who runs each table is still chosen when you make the campaign. To play with AI on someone else's server, connect to an AI-enabled server.`;
 const wayBack = isAndroid
   ? "The back gesture at a page's root does the same."
   : "Ctrl+M does the same from anywhere.";
@@ -41,14 +42,15 @@ export const APP_TOUR_STEPS: TourStep[] = [
   {
     id: "hosts",
     title: "Your hosts",
-    body: "Every server you have signed in to, and the world that lives on this device, are listed here. Tap one to enter it. The dot shows whether it is online right now.",
+    body: "Every server you have signed in to, and the world that lives on this device, are listed here. Tap a server to enter it, or this device's world to make it the one the menu opens. The dot shows whether it is online right now.",
     anchors: ["hosts"],
   },
   {
     id: "story-ai",
     title: "Story AI for your world",
-    body: `Story AI is what the world on this device plays with: it shows what is set now, then offers no AI, an AI on your OpenAI API key${localModels}. Who runs each table is still chosen when you make the campaign. To play with AI on someone else's server, connect to an AI-enabled server.`,
+    body: storyAiBody,
     anchors: ["tile-story-ai", "drawer-story-ai", "hero"],
+    anchorBodies: { "drawer-story-ai": storyAiBody },
     fallbackBody: `Begin your world and Story AI appears in the menu. It chooses who tells the story: a human at the table, an AI billed to your OpenAI API key${localModels}. Or connect to an AI-enabled server and play there.`,
   },
   {
@@ -57,7 +59,7 @@ export const APP_TOUR_STEPS: TourStep[] = [
     body: "The Workshop is where a Dungeon Master preps: maps, monsters, NPCs, lore and handouts, ready to drop into any campaign.",
     anchors: ["tile-workshop", "hero"],
     fallbackBody:
-      "Once you have entered a world, a Workshop line appears in this menu: the Dungeon Master's prep bench for maps, monsters, NPCs, lore and handouts.",
+      "Once your world has begun, a Workshop line appears in this menu: the Dungeon Master's prep bench for maps, monsters, NPCs, lore and handouts.",
   },
   {
     id: "characters",
@@ -65,13 +67,17 @@ export const APP_TOUR_STEPS: TourStep[] = [
     body: "Keep a library of heroes to bring into any campaign, or build one in the wizard. Every lobby also offers ready-made heroes, for playing in a minute.",
     anchors: ["tile-characters", "hero"],
     fallbackBody:
-      "Once you have entered a world, a Characters line appears in this menu for building your adventurers and keeping a library of them.",
+      "Once your world has begun, a Characters line appears in this menu for building your adventurers and keeping a library of them.",
   },
   {
     id: "campaign",
     title: "Start a campaign",
     body: "Quick start is a prepared one-evening adventure with ready-made heroes; New campaign builds your own table. Both open on the host named above them, and Change picks another.",
     anchors: ["tile-quick-start", "tile-new-campaign", "hero"],
+    // No Quick start where the host has no AI storyteller to run it.
+    anchorBodies: {
+      "tile-new-campaign": "New campaign builds your own table: its world, its rules and your friends. It opens on the host named above it, and Change picks another.",
+    },
     fallbackBody:
       "Begin your world here. Once it is running, a New campaign line appears in this menu for starting adventures and inviting friends with a room code.",
   },

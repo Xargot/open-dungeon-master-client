@@ -215,7 +215,7 @@ export async function openTyped(raw: string): Promise<string> {
   // stopped sharing.
   const typed = raw.trim();
   if (CODE_SHAPE.test(typed.toUpperCase()) || parseRoomCode(typed)) {
-    return "No table is online with that code. A code only leads anywhere while its host is sharing, so ask them to open it and try again.";
+    return "No table answers to that code: no world is sharing it right now, and none of the servers you are signed in to has it. Check the code, or ask its host to open their world and try again.";
   }
   const result = await window.odm.probeServer(raw);
   if (result.ok && (await window.odm.openInviteLink(result.probe.origin))) return "";

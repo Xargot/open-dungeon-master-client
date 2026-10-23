@@ -18,6 +18,7 @@ class FakeView {
   });
   constructor() { views.push(this); }
   setBounds() {}
+  setBackgroundColor() {}
 }
 
 const originalLoad = Module._load;

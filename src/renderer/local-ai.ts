@@ -3,7 +3,7 @@
 // machine), the guided local install with its progress, the optional image
 // stack, the OpenAI key form, and an agent's offer to paint too.
 import { backLink, formCard, intro, loadingScreen, show } from "./chrome.js";
-import { button, chip, el, input } from "./dom.js";
+import { button, chip, el, icon, input } from "./dom.js";
 import type { IconName } from "./dom.js";
 import { renderHome } from "./home.js";
 import { playLocal } from "./local.js";
@@ -11,8 +11,9 @@ import { renderError } from "./servers.js";
 import { isAndroid, state } from "./state.js";
 import { renderHarnessPicker } from "./harness-ai.js";
 import { speedChoice } from "./speed-choice.js";
-import { openAiFastModel } from "../shared/ai-setup.js";
+import { LOCAL_AI_MINIMUM_GB, REQUIREMENTS_URL, localAiFit, openAiFastModel } from "../shared/ai-setup.js";
 import { speechSummary } from "../shared/speech.js";
+import { renderMediaSetup } from "./world-media.js";
 import type { AiSetup, HardwareInfo, LocalAiStatus, LocalAiTier, LocalSpeechStatus, SavedAi } from "../shared/types";
 
 // The live progress bar of an install in flight, for the progress events to
@@ -58,8 +59,36 @@ function currentCard(summary: SavedAi["summary"] | null): HTMLElement | null {
   return card;
 }
 
+// Set while the first launch's guided setup runs: who tells the story, then
+// voices and music, then the home screen. Story AI opened from the home
+// screen or Settings goes straight back home once a choice is saved.
+let setupFlow = false;
+
+export function startGuidedSetup(): void {
+  setupFlow = true;
+  renderLocalAi();
+}
+
+// What this computer can run, from the installer's hardware scan, asked
+// once per run of the app and said on the local door.
+let localFit: Promise<{ tag: string; desc: string } | null> | null = null;
+
+function hintLocalFit(btn: HTMLButtonElement): void {
+  localFit ??= window.odm
+    .localAiScan()
+    .then((result) => (result.ok ? localAiFit(result.hardware, result.tiers) : null))
+    .catch(() => null);
+  void localFit.then((fit) => {
+    if (!fit || !btn.isConnected) return;
+    const desc = btn.querySelector(".desc");
+    if (desc) desc.textContent = fit.desc;
+    if (fit.tag) btn.querySelector(".title")?.append(el("span", "tag", fit.tag));
+  });
+}
+
 export function renderLocalAi(fromHome = false, aiStatus: LocalAiStatus | null = null): void {
   state.screenName = "local-ai";
+  if (fromHome) setupFlow = false;
   if (fromHome && !aiStatus) {
     // The entry screen doubles as the status view; fetch once, then re-render
     // with the installed-components card filled in.
@@ -102,14 +131,14 @@ export function renderLocalAi(fromHome = false, aiStatus: LocalAiStatus | null =
         () => renderHarnessPicker(finishAi, () => renderLocalAi()),
       ),
     );
-    choices.append(
-      choice(
-        "cpu",
-        "Local AI on this machine",
-        "Free and private: a guided install sized to your hardware. Needs a beefy machine.",
-        () => void startLocalAiFlow(),
-      ),
+    const local = choice(
+      "cpu",
+      "Local AI on this machine",
+      `Free and private: a guided install sized to your hardware. Needs at least ${LOCAL_AI_MINIMUM_GB} GB of graphics memory.`,
+      () => void startLocalAiFlow(),
     );
+    hintLocalFit(local);
+    choices.append(local);
   }
   show(
     "mid",
@@ -279,7 +308,7 @@ function renderLocalAiTiers(hardware: HardwareInfo, tiers: LocalAiTier[]): void 
   for (const tier of tiers) {
     const tag = tier.installed ? "installed" : tier.recommended ? "recommended" : "";
     const desc = `${tier.detail} ${tier.sizeGb} GB download${
-      tier.fits ? "" : `; needs about ${tier.needsGb} GB of memory`
+      tier.fits || tier.installed ? "" : `; needs about ${tier.needsGb} GB of memory`
     }.`;
     const btn = choice(
       "sparkles",
@@ -291,11 +320,27 @@ function renderLocalAiTiers(hardware: HardwareInfo, tiers: LocalAiTier[]): void 
     btn.disabled = !tier.fits;
     choices.append(btn);
   }
+  // An anchor, as on the help screen: both hosts hand an off-origin link to
+  // the system browser.
+  const needs = el("a", "btn secondary", "");
+  needs.href = REQUIREMENTS_URL;
+  needs.target = "_blank";
+  needs.rel = "noopener noreferrer";
+  needs.append(icon("book"), document.createTextNode("What each storyteller needs"));
+  const needsLine = el("div", "actions");
+  needsLine.style.marginTop = "1rem";
+  needsLine.append(needs);
   show(
     "mid",
     backLink("Story AI", () => renderLocalAi()),
-    intro("Pick your storyteller", `${gpu}: ${memory}. Greyed-out choices need more memory.`),
+    intro(
+      "Pick your storyteller",
+      tiers.some((tier) => tier.fits)
+        ? `${gpu}: ${memory}. Greyed-out choices need more memory.`
+        : `${gpu}: ${memory}. A local storyteller needs at least ${LOCAL_AI_MINIMUM_GB} GB of graphics memory (24 GB of memory on a Mac), so this machine is below it. Your OpenAI key, an agent you already have or a human Dungeon Master runs the table here instead.`,
+    ),
     choices,
+    needsLine,
   );
 }
 
@@ -343,7 +388,15 @@ function renderLocalAiInstall(tier: LocalAiTier): void {
   });
 }
 
+// Every Story AI path ends here: the guided setup goes on to voices and
+// music, anything else back to the home screen (the world's home is the
+// app's, src/renderer/game-screen.ts).
 async function enterLocalWorld(): Promise<void> {
+  if (setupFlow) {
+    setupFlow = false;
+    renderMediaSetup(() => void playLocal(null).then(() => (state.joinIntent = null)));
+    return;
+  }
   await playLocal(null);
   state.joinIntent = null;
 }
@@ -377,7 +430,7 @@ function renderComfyOffer(warning: string): void {
     "mid",
     intro(
       "Add local image generation?",
-      "ComfyUI with the Stable Diffusion XL model paints scene art on your GPU, free and private. About 15 GB all told (Python packages included); needs Python 3 and Git installed. You can remove it later from the Story AI screen.",
+      "ComfyUI with the Stable Diffusion XL model paints scene art on your GPU, free and private. About 15 GB all told (Python packages included); needs Python 3.10 to 3.14 and Git installed. You can remove it later from the Story AI screen.",
     ),
     warning ? el("p", "error", warning) : null,
     choices,
@@ -577,8 +630,7 @@ async function finishAi(setup: AiSetup, next?: () => void): Promise<void> {
     next();
     return;
   }
-  await playLocal(null);
-  state.joinIntent = null;
+  await enterLocalWorld();
 }
 
 // After an agent that can paint is chosen: the same sign-in can paint the
@@ -631,7 +683,7 @@ export function renderAgentPictures(agent: string): void {
     const img = el("img", "agent-test-picture");
     img.src = result.image;
     img.alt = "The test map";
-    const cont = button("primary", "Enter your world", () => void enterLocalWorld(), "play");
+    const cont = button("primary", "Continue", () => void enterLocalWorld(), "play");
     cont.classList.add("block");
     show(
       "narrow",

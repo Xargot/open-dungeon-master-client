@@ -256,6 +256,34 @@ export interface LocalSpeechStatus {
   active: "whisper" | "builtin" | "openai" | "none";
 }
 
+// What reads the device world's story aloud (the server's Admin > Speech
+// narration), as Settings shows it outside the world
+// (src/shared/world-media.ts).
+export interface NarrationStatus {
+  // The saved choice; "" was never chosen and means Kokoro at its usual
+  // address, which reads aloud only when one answers there.
+  provider: "" | "openai" | "kokoro" | "off";
+  // The saved Kokoro address, "" for the usual one.
+  kokoroUrl: string;
+  // An OpenAI key the world already holds (Story AI's key door).
+  keySaved: boolean;
+  // A Kokoro this computer answers on, its address; "" when none does.
+  found: string;
+}
+
+export type NarrationChoice = { kind: "openai" } | { kind: "kokoro"; url: string } | { kind: "off" };
+
+// The device world's sound library (the server's Admin > Sound library):
+// how many of the catalog's sounds have audio, and a pack download.
+export interface SoundLibraryStatus {
+  installed: number;
+  total: number;
+  status: "idle" | "installing" | "ready" | "error";
+  // 0 to 1 while the pack downloads.
+  progress: number;
+  error: string;
+}
+
 // How this build reached the machine; decides whether the app may replace
 // itself ("appimage", "nsis") or must point at the real update channel.
 export type InstallKind =
@@ -596,6 +624,14 @@ export interface OdmBridge {
   // phone dictates with its own recognizer, so it leaves these out.
   localSpeechStatus?(): Promise<Result<{ speech: LocalSpeechStatus }>>;
   localSpeechInstall?(): Promise<Result<{ speech: LocalSpeechStatus }>>;
+  // Narration and the sound library for the device world, set from
+  // Settings so nobody has to enter the world for them. Each wakes the
+  // world when it is asleep. The sample is one spoken line as an audio
+  // data URL.
+  localNarration?(): Promise<Result<{ narration: NarrationStatus }>>;
+  localSetNarration?(choice: NarrationChoice): Promise<Result<{ narration: NarrationStatus; notice?: string }>>;
+  localNarrationSample?(): Promise<Result<{ audio: string }>>;
+  localSoundLibrary?(install: boolean): Promise<Result<{ library: SoundLibraryStatus }>>;
   // Moving the device world to another device (src/shared/world-transfer.ts):
   // pack it into one file the person saves (saved is false when they close
   // the save dialog), or check a file they pick (preview is null when they

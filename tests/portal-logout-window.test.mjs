@@ -15,6 +15,7 @@ class FakeView {
     close() {},
   });
   setBounds() {}
+  setBackgroundColor() {}
 }
 
 const electron = {

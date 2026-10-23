@@ -4,11 +4,46 @@
 // world), so neither shell ever writes a key into a campaign. No model is
 // named here: each one is picked from what the key lists, as the server
 // itself names none (server PR 298).
-import type { AiModelsResult, AiSetup, SavedAi } from "./types";
+import type { AiModelsResult, AiSetup, HardwareInfo, LocalAiTier, SavedAi } from "./types";
 
 export const OPENAI_BASE_URL = "https://api.openai.com/v1";
 
+// The least graphics memory the desktop's local storyteller is offered on: a
+// 16 GB card, or a unified pool whose GPU share reaches it (a 24 GB Mac).
+// Below it no model plays the full rules well enough, so the app offers none
+// rather than one that fumbles the table. The server's docs state the same
+// minimum (docs/text-backends.md).
+export const LOCAL_AI_MINIMUM_GB = 16;
+// Every setup's needs, the local storyteller's with the machines it was
+// measured on, on the site's guide.
+export const REQUIREMENTS_URL = "https://opendungeonmaster.com/guide/start/system-requirements/";
+
 export const NO_SAVED_AI: SavedAi = { keySaved: false, model: "", utilityModel: "" };
+
+// The model a tier installs, as its catalog line names it ("gpt-oss-20b:
+// ...", "Qwen3.6-35B-A3B at Q4: ...").
+function tierModel(tier: LocalAiTier): string {
+  return tier.detail.split(/:| at /)[0]?.trim() || tier.label;
+}
+
+// What Story AI's "Local AI on this machine" door says once the hardware
+// scan answers, so the guided setup tells a 16 GB card it can run a
+// storyteller (and a smaller machine why it cannot) before anything is
+// opened. The pick is the installer's own recommendation.
+export function localAiFit(hardware: HardwareInfo, tiers: LocalAiTier[]): { tag: string; desc: string } {
+  const installed = tiers.find((tier) => tier.installed);
+  if (installed) return { tag: "installed", desc: `${tierModel(installed)} is installed on this computer: free and private.` };
+  const pick = tiers.find((tier) => tier.recommended) ?? tiers.find((tier) => tier.fits);
+  if (pick) {
+    return { tag: "fits this computer", desc: `Free and private: this computer runs ${tierModel(pick)}, a ${pick.sizeGb} GB download the app sets up for you.` };
+  }
+  const gpu = hardware.gpuName || "this computer";
+  const memory = hardware.unifiedMemory ? `${hardware.ramGb} GB of unified memory` : `${hardware.vramGb} GB of graphics memory`;
+  return {
+    tag: "",
+    desc: `Needs at least ${LOCAL_AI_MINIMUM_GB} GB of graphics memory, and ${gpu} has ${memory}. Your OpenAI key, an agent or a person tells the story here instead.`,
+  };
+}
 
 // Processing speed (server issue 255): Fast is offered for any model named
 // on OpenAI's API, as the server's src/lib/speed-tier.ts offers it. Which

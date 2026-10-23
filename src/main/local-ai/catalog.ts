@@ -1,18 +1,21 @@
+import { LOCAL_AI_MINIMUM_GB } from "../../shared/ai-setup";
 import type { HardwareInfo, LocalAiTier } from "../../shared/types";
 
-// The curated local AI catalog: one story model in a quant ladder, plus a
-// small dense fallback for machines the ladder cannot reach. Deliberately
-// tiny; the point is a working table, not a model browser.
+// The curated local AI catalog: one story model in a quant ladder, and
+// gpt-oss-20b for the 16 GB minimum below it. Deliberately tiny; the point is
+// a working table, not a model browser.
 //
 // The story model is Qwen3.6-35B-A3B, the same model the ODM server's
 // defaults were tuned against. A3B means ~3B active parameters per token
 // (mixture of experts), which is what makes big-model quality viable on
 // modest hardware: experts that do not fit in VRAM can sit in system RAM
-// (cpu-moe) at a tolerable speed cost. All files are Unsloth Dynamic quants
-// from an ungated repo, so downloads need no Hugging Face account.
+// (cpu-moe) at a tolerable speed cost. All files come from ungated repos
+// (Unsloth's Dynamic quants, ggml-org's gpt-oss), so downloads need no
+// Hugging Face account.
 
 const QWEN_BASE = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main";
 const GEMMA_BASE = "https://huggingface.co/unsloth/gemma-4-12b-it-qat-GGUF/resolve/main";
+const GPT_OSS_BASE = "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main";
 
 // Pinned llama.cpp build. Vulkan on Linux/Windows covers AMD, NVIDIA and
 // Intel with one binary; macOS arm64 uses Metal. Pinned rather than latest
@@ -58,6 +61,8 @@ export interface CatalogEntry {
   // File size plus KV cache and runtime overhead at the shipped context.
   needsGb: number;
   moe: boolean;
+  // Whose samplers and reasoning settings the preset carries.
+  family: "qwen" | "gpt-oss" | "gemma";
 }
 
 export const CATALOG: CatalogEntry[] = [
@@ -71,6 +76,7 @@ export const CATALOG: CatalogEntry[] = [
     sizeGb: 38.5,
     needsGb: 45,
     moe: true,
+    family: "qwen",
   },
   {
     id: "qwen-q6",
@@ -82,6 +88,7 @@ export const CATALOG: CatalogEntry[] = [
     sizeGb: 31.9,
     needsGb: 38,
     moe: true,
+    family: "qwen",
   },
   {
     id: "qwen-q4",
@@ -93,7 +100,28 @@ export const CATALOG: CatalogEntry[] = [
     sizeGb: 22.2,
     needsGb: 28,
     moe: true,
+    family: "qwen",
   },
+  {
+    id: "gpt-oss-20b",
+    label: "Story model for 16 GB",
+    detail: "gpt-oss-20b: OpenAI's open model, the smallest that plays the full rules.",
+    alias: "gpt-oss-20b",
+    url: `${GPT_OSS_BASE}/gpt-oss-20b-MXFP4.gguf`,
+    file: "gpt-oss-20b-MXFP4.gguf",
+    sizeGb: 12.1,
+    needsGb: 16,
+    moe: true,
+    family: "gpt-oss",
+  },
+];
+
+// Tiers offered before the 16 GB minimum. An install of one still starts and
+// shows as installed; none is offered again. Where they fit, gpt-oss-20b
+// plays the full rules as well as the 35B at Q2 and Q3 did, faster and in
+// less memory (the server's docs/text-backends.md has the runs), and Gemma
+// 4 12B plays only on the short rules.
+export const RETIRED: CatalogEntry[] = [
   {
     id: "qwen-q3",
     label: "Story model, compact",
@@ -104,6 +132,7 @@ export const CATALOG: CatalogEntry[] = [
     sizeGb: 16.9,
     needsGb: 22,
     moe: true,
+    family: "qwen",
   },
   {
     id: "qwen-q2",
@@ -115,6 +144,7 @@ export const CATALOG: CatalogEntry[] = [
     sizeGb: 12.3,
     needsGb: 17,
     moe: true,
+    family: "qwen",
   },
   {
     id: "gemma-12b",
@@ -126,6 +156,7 @@ export const CATALOG: CatalogEntry[] = [
     sizeGb: 6.8,
     needsGb: 10,
     moe: false,
+    family: "gemma",
   },
 ];
 
@@ -145,7 +176,18 @@ export const UTILITY_ENTRY: CatalogEntry = {
   sizeGb: 2.9,
   needsGb: 5,
   moe: false,
+  family: "qwen",
 };
+
+// The memory the model can sit in on the GPU: the card, or the share of a
+// unified pool the system leaves it.
+export function graphicsMemoryGb(hardware: HardwareInfo): number {
+  return hardware.unifiedMemory ? hardware.ramGb * 0.8 : hardware.vramGb;
+}
+
+export function meetsMinimum(hardware: HardwareInfo): boolean {
+  return graphicsMemoryGb(hardware) >= LOCAL_AI_MINIMUM_GB;
+}
 
 // Whether the machine can hold the utility model next to a story tier.
 export function utilityFits(entry: CatalogEntry, hardware: HardwareInfo): boolean {
@@ -162,8 +204,9 @@ export function memoryBudgetGb(hardware: HardwareInfo): number {
   if (hardware.vramGb >= 4) {
     return hardware.vramGb + hardware.ramGb * 0.5;
   }
-  // CPU-only: the OS, the ODM server and a browser share the same RAM, but
-  // a 16GB machine should still clear the small fallback model.
+  // CPU-only: the OS, the ODM server and a browser share the same RAM. No
+  // story tier is offered here (meetsMinimum); the budget still sizes the
+  // utility model beside an install made before the minimum.
   return hardware.ramGb * 0.65;
 }
 
@@ -172,17 +215,19 @@ export function sizeTiers(
   installedTierId: string,
 ): LocalAiTier[] {
   const budget = memoryBudgetGb(hardware);
-  const tiers = CATALOG.map((entry) => ({
+  const enough = meetsMinimum(hardware);
+  const kept = RETIRED.filter((entry) => entry.id === installedTierId);
+  const tiers = [...CATALOG, ...kept].map((entry) => ({
     id: entry.id,
     label: entry.label,
     detail: entry.detail,
     sizeGb: entry.sizeGb,
     needsGb: entry.needsGb,
-    fits: entry.needsGb <= budget,
+    fits: enough && entry.needsGb <= budget,
     recommended: false,
     installed: entry.id === installedTierId,
   }));
-  const best = tiers.find((tier) => tier.fits);
+  const best = tiers.find((tier) => tier.fits && CATALOG.some((entry) => entry.id === tier.id));
   if (best) {
     best.recommended = true;
   }
@@ -190,7 +235,7 @@ export function sizeTiers(
 }
 
 export function catalogEntry(tierId: string): CatalogEntry | null {
-  return CATALOG.find((entry) => entry.id === tierId) ?? null;
+  return [...CATALOG, ...RETIRED].find((entry) => entry.id === tierId) ?? null;
 }
 
 // The llama-server models preset for an installed tier. The Qwen section is
@@ -228,7 +273,7 @@ export function presetFor(
   if (offload) {
     lines.push("cpu-moe = true");
   }
-  if (entry.moe) {
+  if (entry.family === "qwen") {
     lines.push(
       "c = 65536",
       "ctk = q8_0",
@@ -242,6 +287,10 @@ export function presetFor(
       "reasoning-budget = 2048",
       "reasoning-budget-message = Enough deliberation. Decide now: emit the exact tool calls the rules require, or answer directly.",
     );
+  } else if (entry.family === "gpt-oss") {
+    // As gpt-oss-20b was measured for the 16 GB minimum: the chat template's
+    // own reasoning, capped, and llama.cpp's default samplers.
+    lines.push("c = 65536", "ctk = q8_0", "ctv = q8_0", "reasoning-budget = 1024");
   } else {
     lines.push(
       "c = 32768",

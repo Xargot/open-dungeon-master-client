@@ -68,7 +68,46 @@ export function portalEligible(input: { bundled: string; remote: string }): Port
 // (`layered`), which an older host drops, and the sheet counts AC and magic
 // by the one-of-a-kind rules an older host's engine does not keep, so the
 // AC on the sheet would not be the AC the DM rolls against.
-export const NATIVE_MIN_SERVER = "0.28.2";
+// Raised again for hands and gear and the table's fight pace (server issues
+// 424 and 432): the table settings save how often fights come
+// (`combatPace`), which an older host drops, so the picker springs back to
+// Balanced; the Hand deals gear cards (draw, stow, drop, pick up, a shield)
+// whose moves and costs an older host's DM has no tool to carry out; and the
+// builder says the DM reads the whole backstory, which an older host cuts.
+// Raised again for the table's pace and breaks (server 0.28.4, PRs 438, 453,
+// 455 and 464): the settings save when the AI DM answers (`waitForTable`),
+// which an older host drops, and the table calls routes an older host does
+// not have (a break, a Pass, the party backstory); a wizard the app opens
+// from its home returns there only on a host that knows to send it back.
+// Raised again for workshop classes and whole names (server 0.29.0, PRs 470,
+// 476 and 477): the workshop saves a class of the table's own, a kind an
+// older host refuses, and the builder offers it; a Market line picked from
+// the catalog keeps the row it is (`srdName`) when it is renamed, which an
+// older host drops, so a renamed line would sell as no item at all.
+// Raised again for one tool per intent, stat blocks read whole and the SRD
+// creature table (server 0.29.1, issues 471, 473 and 480): the DM console
+// sets an enemy's condition and deals an enemy's damage through
+// set_condition and apply_damage, and teleports a token through move_token,
+// which an older host refuses or reads as a character's; the workshop saves
+// an attack made as a bonus action, a swarm's weaker blow and a creature's
+// resistance to a condition, which an older host drops, so the block springs
+// back; and the console offers any creature for True Polymorph and
+// Shapechange, which an older host refuses as no beast.
+// Also needed from the same release for Workshop references (server
+// workshop import audit, 2026-10-22): the builder and the level-up dialog
+// say which of a player's own subclasses a table leaves out, and an older
+// host names every class's subclasses there, so a fighter's list would
+// explain away a wizard's; the creator, the import picker and Homebrew read
+// what failed and what a rename carried from answers an older host does not
+// give.
+// Also needed from the same release for the board and the hero chooser
+// (server PRs 481, 493 and 494): Help me build asks the confirm sheet to
+// judge a hero not stored yet, which an older host refuses as no hero
+// picked; Undo move calls a route an older host does not have; and the
+// party card's "In fights" picker saves who commands a companion
+// (`commandedBy`), which an older host drops, so the picker springs back to
+// the DM.
+export const NATIVE_MIN_SERVER = "0.29.1";
 
 export function nativeEligible(remote: string): PortalVerdict {
   const version = parseVersion(remote);

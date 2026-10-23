@@ -5,6 +5,7 @@ import {
   buildGroups,
   campaignLine,
   canDeleteFromHome,
+  canDuplicateFromHome,
   chapterLine,
   deviceStatusLine,
   enterLabel,
@@ -99,6 +100,15 @@ test("continue picks the freshest active campaign on a reachable host, lobbies a
   assert.equal(pickContinueCampaign(feed([])), null);
 });
 
+test("the device world's cached tables are continued while it sleeps, since opening one wakes it", () => {
+  const asleep = feed([local({ status: "offline", campaigns: [campaign({ id: "mine" })] })]);
+  assert.equal(pickContinueCampaign(asleep), null, "without the shell saying it wakes");
+  assert.equal(pickContinueCampaign(asleep, true).campaign.id, "mine");
+  // A server that is down is still not continued.
+  const down = feed([host({ status: "offline", campaigns: [campaign({ id: "theirs" })] })]);
+  assert.equal(pickContinueCampaign(down, true), null);
+});
+
 test("the primary host is the hero's, else the device world, else the first online server", () => {
   const hero = { host: host({ id: "hero" }), campaign: campaign() };
   assert.equal(pickPrimaryHost(feed([local()]), hero).id, "hero");
@@ -148,6 +158,19 @@ test("a slot offers Delete to the owner alone, and only on a host that answers",
   assert.equal(canDeleteFromHome(host({ status: "offline" }), owned), false);
   assert.equal(canDeleteFromHome(host({ status: "needsLogin" }), owned), false);
   assert.equal(canDeleteFromHome(local({ status: "offline" }), owned), false);
+  // The device world asleep, when the shell says it wakes: its own kept list.
+  assert.equal(canDeleteFromHome(local({ status: "offline", stale: true }), owned, true), true);
+  assert.equal(canDeleteFromHome(host({ status: "offline", stale: true }), owned, true), false);
+});
+
+test("a slot offers Duplicate to the owner or the DM seat, where new campaigns may start", () => {
+  const open = (over = {}) => host({ canCreate: true, ...over });
+  assert.equal(canDuplicateFromHome(open(), campaign({ role: "owner" })), true);
+  assert.equal(canDuplicateFromHome(open(), campaign({ role: "player", dmSeat: true })), true);
+  assert.equal(canDuplicateFromHome(open(), campaign({ role: "player" })), false);
+  assert.equal(canDuplicateFromHome(open({ canCreate: false }), campaign({ role: "owner" })), false);
+  assert.equal(canDuplicateFromHome(open({ stale: true }), campaign({ role: "owner" })), false);
+  assert.equal(canDuplicateFromHome(local({ canCreate: true, status: "offline", stale: true }), campaign({ role: "owner" }), true), true);
 });
 
 test("groups follow the feed, sort rows, label status and explain what cannot continue", () => {

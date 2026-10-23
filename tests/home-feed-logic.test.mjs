@@ -15,8 +15,7 @@ import {
   parseCampaigns,
   parseCanCreate,
   parseOffersStory,
-  resolveHost,
-} from "../dist/shared/home-feed-logic.js";
+  resolveHost, tableLookupOrigins } from "../dist/shared/home-feed-logic.js";
 
 const origin = "https://play.example";
 
@@ -547,4 +546,14 @@ test("a host that refuses the session is a sign-in matter, not a move", async ()
   const feed = await h.feed.refresh();
   assert.equal(feed.hosts[0].status, "needsLogin");
   assert.deepEqual(calls, []);
+});
+
+test("a typed code is asked of signed-in servers only, never a friend's world, newest first", () => {
+  const origins = tableLookupOrigins([
+    { origin: "https://old.example.com", lastUsedAt: "2026-09-01T00:00:00.000Z", signedIn: true },
+    { origin: "https://play-abcd2345.opendungeonmaster.com", lastUsedAt: "2026-10-20T00:00:00.000Z", signedIn: true },
+    { origin: "https://new.example.com", lastUsedAt: "2026-10-19T00:00:00.000Z", signedIn: true },
+    { origin: "https://signed-out.example.com", lastUsedAt: "2026-10-20T00:00:00.000Z", signedIn: false },
+  ]);
+  assert.deepEqual(origins, ["https://new.example.com", "https://old.example.com"]);
 });

@@ -64,10 +64,15 @@ export function reconcileLocal(feed: HomeFeed, local: LocalStatus): HomeFeed {
 
 // The most recently updated campaign still in play on a host that can be
 // reached, with active tables ahead of lobbies still gathering.
-export function pickContinueCampaign(feed: HomeFeed): ContinuePick | null {
+//
+// localWakes: the device world is asleep but wakes when one of its tables is
+// opened, so its cached campaigns count as reachable (a world that failed to
+// start, or has no owner yet, does not wake on its own).
+export function pickContinueCampaign(feed: HomeFeed, localWakes = false): ContinuePick | null {
   let best: ContinuePick | null = null;
   for (const host of feed.hosts) {
-    if (!reachable(host)) continue;
+    const wakes = localWakes && host.kind === "local" && host.status === "offline";
+    if (!reachable(host) && !wakes) continue;
     for (const campaign of host.campaigns) {
       if (campaign.status === "ended") continue;
       if (!best || byFreshness(campaign, best.campaign) < 0) best = { host, campaign };
@@ -162,11 +167,27 @@ export function rowAction(host: HomeHost): RowAction {
   return "blocked";
 }
 
-// Whether a save slot offers Delete: the owner's alone, as on the website,
-// and only while the host answers with a fresh list, so the call has
-// somewhere to go and the slot is not a memory of a table already gone.
-export function canDeleteFromHome(host: HomeHost, campaign: HomeCampaign): boolean {
-  return campaign.role === "owner" && rowAction(host) === "open" && !host.stale;
+// Whether a save slot's actions have somewhere to go: a host that answers
+// with a fresh list, so the slot is not a memory of a table already gone,
+// or the device world asleep (localWakes, as for the continue pick): its
+// list is its own, kept while it sleeps, and the action wakes it first.
+function slotLive(host: HomeHost, localWakes: boolean): boolean {
+  if (localWakes && host.kind === "local" && host.status === "offline") return true;
+  return rowAction(host) === "open" && !host.stale;
+}
+
+// Whether a save slot offers Delete: the owner's alone, as on the website.
+export function canDeleteFromHome(host: HomeHost, campaign: HomeCampaign, localWakes = false): boolean {
+  return campaign.role === "owner" && slotLive(host, localWakes);
+}
+
+// Whether a save slot offers Duplicate, as the website's slot does. The
+// server lets whoever steers the story copy it (the seated DM, or the party
+// lead); the feed does not carry the lead, so the slot asks the owner and
+// the DM seat, and the server's answer stands. The copy is a new campaign,
+// so only on a host where this account may start one.
+export function canDuplicateFromHome(host: HomeHost, campaign: HomeCampaign, localWakes = false): boolean {
+  return host.canCreate && (campaign.role === "owner" || campaign.dmSeat === true) && slotLive(host, localWakes);
 }
 
 // "3h ago" style, coarse on purpose: the point is whether it was today.

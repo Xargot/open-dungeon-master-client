@@ -276,6 +276,41 @@ test("a key whose list settles no picture model is saved, and the player is told
   assert.equal(h.patches.length, 1, "only the key and the storyteller were saved");
 });
 
+test("Settings reads and sets narration on the phone's world, as the desktop does", async () => {
+  const h = harness({
+    ...SIGNED_IN,
+    adminSettings: { config: { text: { provider: "none" }, images: {}, speech: { ttsProvider: "" } } },
+    listings: (path) => (path === "/api/admin/setup" ? { kokoro: null } : null),
+  });
+  const world = createLocalWorld(h.deps);
+  assert.deepEqual(await world.narration(), {
+    ok: true,
+    narration: { provider: "", kokoroUrl: "", keySaved: false, found: "" },
+  });
+  const off = await world.setNarration({ kind: "off" });
+  assert.equal(off.ok, true);
+  assert.deepEqual(h.patches.at(-1), { speech: { ttsProvider: "off" } });
+  const keyless = await world.setNarration({ kind: "openai" });
+  assert.deepEqual(keyless, { ok: false, error: "This world holds no OpenAI key yet. Add one in Story AI first." });
+});
+
+test("the sound library needs the bridge's GET, and downloads with the world's POST", async () => {
+  const h = harness({ ...SIGNED_IN, listings: (path) => (path === "/api/admin/ambience" ? { status: "installing", progress: 0, counts: {} } : null) });
+  const older = await createLocalWorld(h.deps).sounds(false);
+  assert.deepEqual(older, { ok: false, error: "Update the app to read this." });
+  const gets: string[] = [];
+  h.deps.getAdmin = async (_origin, _token, path) => {
+    gets.push(path);
+    return { status: "idle", progress: 0, counts: { bed: { installed: 0, total: 30 } } };
+  };
+  const world = createLocalWorld(h.deps);
+  assert.deepEqual(await world.sounds(false), { ok: true, library: { installed: 0, total: 30, status: "idle", progress: 0, error: "" } });
+  assert.deepEqual(gets, ["/api/admin/ambience"]);
+  const started = await world.sounds(true);
+  assert.equal(started.ok && started.library.status, "installing");
+  assert.deepEqual(h.posted.at(-1), { path: "/api/admin/ambience", body: { action: "install" } });
+});
+
 test("the form lists the storyteller models the key offers", async () => {
   const h = harness({
     ...SIGNED_IN,

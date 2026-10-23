@@ -4,11 +4,15 @@ import type {
   AiSetup,
   ConnectResult,
   LocalStatus,
+  NarrationChoice,
+  NarrationStatus,
   RepairResult,
   Result,
   SavedAi,
   ShellEvent,
+  SoundLibraryStatus,
 } from "../../src/shared/types";
+import { narrationSample, readNarration, saveNarration, soundLibrary, type WorldAdmin } from "../../src/shared/world-media";
 import {
   NO_SAVED_AI,
   STORY_MODELS_PATH,
@@ -147,6 +151,8 @@ export interface LocalWorldDeps {
   // One of the world's admin routes that takes and answers JSON (the model
   // listings the OpenAI door asks); a refusal throws.
   postAdmin(origin: string, token: string, path: string, body: object): Promise<unknown>;
+  // One read with a GET (the sound library's state); a refusal throws.
+  getAdmin?(origin: string, token: string, path: string): Promise<unknown>;
   // Plants the session and opens the world's pages in the game webview.
   open(origin: string, token: string, joinCode: string, path: string): Promise<void>;
   // Plants the session alone. The bridge's own requests share the webview's
@@ -413,6 +419,58 @@ export function createLocalWorld(deps: LocalWorldDeps) {
     }
   }
 
+  // Narration and the sound library (src/shared/world-media.ts), from
+  // Settings, as the desktop shell asks them: the world woken when it is
+  // asleep and asked through the routes its own admin page uses.
+  async function worldAdmin(): Promise<WorldAdmin> {
+    const origin = await start();
+    const profile = await liveToken(origin);
+    if (!profile) throw new Error("Set up your profile first.");
+    const token = profile.token;
+    const get = deps.getAdmin;
+    return {
+      settings: () => deps.getAdminSettings(origin, token),
+      patch: (patch) => deps.patchAdminSettings(origin, token, patch),
+      post: (path, body) => deps.postAdmin(origin, token, path, body),
+      get: (path) => (get ? get(origin, token, path) : Promise.reject(new Error("Update the app to read this."))),
+    };
+  }
+
+  async function narration(): Promise<Result<{ narration: NarrationStatus }>> {
+    try {
+      return { ok: true, narration: await readNarration(await worldAdmin()) };
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
+  async function setNarration(choice: NarrationChoice): Promise<Result<{ narration: NarrationStatus; notice?: string }>> {
+    try {
+      const saved = await saveNarration(choice, await worldAdmin());
+      if ("error" in saved) return fail(new Error(saved.error));
+      return { ok: true, narration: saved.narration, ...(saved.notice ? { notice: saved.notice } : {}) };
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
+  async function sample(): Promise<Result<{ audio: string }>> {
+    try {
+      const answer = await narrationSample(await worldAdmin());
+      return "error" in answer ? fail(new Error(answer.error)) : { ok: true, audio: answer.audio };
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
+  async function sounds(install: boolean): Promise<Result<{ library: SoundLibraryStatus }>> {
+    try {
+      return { ok: true, library: await soundLibrary(install, await worldAdmin()) };
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
   async function stop(): Promise<void> {
     await deps.plugin.stop().catch(() => undefined);
     await announce();
@@ -585,6 +643,10 @@ export function createLocalWorld(deps: LocalWorldDeps) {
     configureAi,
     aiSaved,
     aiModels,
+    narration,
+    setNarration,
+    sample,
+    sounds,
     stop,
     publish,
     watch,

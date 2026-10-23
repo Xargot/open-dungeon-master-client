@@ -215,6 +215,27 @@ export async function postAdmin(origin: string, token: string, pathname: string,
   return res.json();
 }
 
+// Whether a server has a table under a room code: its public join preview,
+// asked the way the invite page asks it (a miss counts against that
+// address's lockout there, as a wrong password does, so callers ask once).
+export async function tableAt(origin: string, code: string): Promise<boolean> {
+  try {
+    const res = await api(origin, `/api/campaigns/join/preview?code=${encodeURIComponent(code)}`, undefined, 5_000);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// One of the world's admin routes read with a GET (the sound library's
+// state, src/shared/world-media.ts).
+export async function getAdmin(origin: string, token: string, pathname: string): Promise<unknown> {
+  const res = await api(origin, pathname, { headers: { authorization: `Bearer ${token}` } });
+  if (res.status === 404) throw new ApiError("This world's server is too old for that; update the app.");
+  if (!res.ok) throw await errorFrom(res, "The world's server refused the request.");
+  return res.json();
+}
+
 // The masked admin settings: every field, with each key reduced to whether
 // one is set.
 export async function getAdminSettings(origin: string, token: string): Promise<unknown> {

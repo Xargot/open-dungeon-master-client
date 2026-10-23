@@ -29,6 +29,16 @@ export class GameRouter {
   // Addresses the native screens cannot show (another site, or the host by
   // full address): handed here for the shell to open the old way.
   onLeave: ((url: string) => void) | null = null;
+  // The host's bare home page, where the shell's own title screen stands in
+  // for it (the device world's home is the app's home): handed here instead
+  // of joining the stack. Null keeps the host's page. A home page with a
+  // query (the campaign wizard's /?new=1) is still the host's, and so is
+  // that page tidying its own address to "/" once the wizard is open.
+  onHome: (() => void) | null = null;
+  // How many times the page on screen has been refreshed: the game root
+  // keys the page on it as well as on its route, so a refresh mounts the
+  // page afresh and it loads its data again.
+  refreshes = 0;
 
   constructor(initial: string) {
     this.stack = [split(initial)];
@@ -51,11 +61,18 @@ export class GameRouter {
     for (const listener of this.listeners) listener();
   }
 
+  private handsHome(location: GameLocation | undefined): boolean {
+    if (!this.onHome || !location || location.pathname !== "/" || location.search !== "") return false;
+    this.onHome();
+    return true;
+  }
+
   push(url: string): void {
     if (isAbsoluteUrl(url)) {
       this.onLeave?.(url);
       return;
     }
+    if (this.handsHome(split(url))) return;
     this.stack.push(split(url));
     this.notify();
   }
@@ -65,20 +82,25 @@ export class GameRouter {
       this.onLeave?.(url);
       return;
     }
+    if (this.location.pathname !== "/" && this.handsHome(split(url))) return;
     this.stack[this.stack.length - 1] = split(url);
     this.notify();
   }
 
   back(): boolean {
     if (this.stack.length <= 1) return false;
+    if (this.handsHome(this.stack[this.stack.length - 2])) return true;
     this.stack.pop();
     this.notify();
     return true;
   }
 
-  // A fresh location object for the same address remounts the page, which
-  // reloads its data the way a browser refresh would.
+  // The same address, mounted afresh (the game root keys the page on
+  // `refreshes`), which reloads its data the way a browser refresh would. A
+  // fresh location object alone re-rendered the page and reloaded nothing:
+  // the page is keyed on its route, which a refresh leaves as it was.
   refresh(): void {
+    this.refreshes += 1;
     this.stack[this.stack.length - 1] = { ...this.location };
     this.notify();
   }

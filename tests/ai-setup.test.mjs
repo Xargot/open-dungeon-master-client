@@ -337,3 +337,21 @@ test("narration on the key is asked for only when ticked", async () => {
   assert.match(unpicked.saved.notice, /Narration in Admin > Speech/);
   assert.ok(!unpicked.patches.some((patch) => patch.speech?.ttsProvider), "nothing is switched on without a model");
 });
+
+test("the local door says what this computer runs: the installer's pick, an install, or why not", async () => {
+  const { localAiFit } = await import("../dist/shared/ai-setup.js");
+  const tier = (over) => ({ id: "t", label: "Story model", detail: "Qwen3.6-35B-A3B at Q4: the sweet spot.", sizeGb: 22.2, needsGb: 28, fits: false, recommended: false, installed: false, ...over });
+  const card16 = { gpuName: "AMD BC-250", vramGb: 16, ramGb: 16, unifiedMemory: false };
+  const gptOss = tier({ id: "gpt-oss-20b", label: "Story model for 16 GB", detail: "gpt-oss-20b: OpenAI's open model, the smallest that plays the full rules.", sizeGb: 12.1, needsGb: 16, fits: true, recommended: true });
+  assert.deepEqual(localAiFit(card16, [tier({}), gptOss]), {
+    tag: "fits this computer",
+    desc: "Free and private: this computer runs gpt-oss-20b, a 12.1 GB download the app sets up for you.",
+  });
+  const installed = localAiFit(card16, [gptOss, tier({ installed: true })]);
+  assert.equal(installed.tag, "installed");
+  assert.match(installed.desc, /^Qwen3\.6-35B-A3B is installed/);
+  const small = localAiFit({ gpuName: "GTX 1660", vramGb: 6, ramGb: 16, unifiedMemory: false }, [tier({}), { ...gptOss, fits: false, recommended: false }]);
+  assert.equal(small.tag, "");
+  assert.match(small.desc, /at least 16 GB of graphics memory, and GTX 1660 has 6 GB of graphics memory/);
+  assert.match(localAiFit({ gpuName: "", vramGb: 0, ramGb: 16, unifiedMemory: true }, []).desc, /this computer has 16 GB of unified memory/);
+});
