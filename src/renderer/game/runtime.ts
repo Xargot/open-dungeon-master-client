@@ -12,6 +12,7 @@ import { localAsset } from "./local-assets.js";
 import { forgetObjectUrls, hold, keepObjectUrlsFor, objectUrlFor } from "./object-urls.js";
 import { canStreamAudio, liveAudioUrl } from "./live-audio.js";
 import { isLiveNarrationPath } from "../../shared/live-audio.js";
+import { watchStreamEvent } from "./offer-watch.js";
 
 // Public static files of the host: no session needed, so the address is
 // rewritten in place and the browser loads them itself. Any query on the
@@ -154,6 +155,9 @@ class HostEventSource extends EventTarget {
     this.handle = client.stream(
       this.url,
       (event: SseEvent) => {
+        // An offer only this player may answer can become a system
+        // notification (offer-watch.ts); the page gets the event regardless.
+        watchStreamEvent(client, this.url, event);
         const message = new MessageEvent(event.event, { data: event.data, lastEventId: event.id });
         this.dispatchEvent(message);
         if (event.event === "message") this.onmessage?.(message);

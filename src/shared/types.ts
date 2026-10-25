@@ -3,6 +3,7 @@
 // build and the browser renderer build, so it must stay runtime-free.
 
 import type { DeckChoice, DeckInfo, FieldRect } from "./deck";
+import type { OfferNotice, OfferTarget } from "./offer-notice";
 import type { StoryMemory, StoryMemoryStatus } from "./story-memory";
 import type { WorldPreview } from "./world-transfer";
 
@@ -464,7 +465,10 @@ export type ShellEvent =
   | { kind: "world-transfer"; phase: string }
   // After every feed refresh, including the ones a local-status or
   // tunnel-status change sets off.
-  | { kind: "home-feed"; feed: HomeFeed };
+  | { kind: "home-feed"; feed: HomeFeed }
+  // The player tapped an offer's system notification: open that table at
+  // the offer's card (src/shared/offer-notice.ts).
+  | ({ kind: "open-offer" } & OfferTarget);
 
 // What a server answers when the player deletes their account there. The
 // server signs the account out everywhere and erases it after graceDays
@@ -489,8 +493,16 @@ export interface OdmBridge {
   // (phase 21). Absent where the platform's own viewer will do.
   openDocument?(path: string): Promise<boolean>;
   // The desktop's game screens say which host they show, so a document the
-  // page asks to open is fetched with that host's session (doc:open).
+  // page asks to open is fetched with that host's session (doc:open). The
+  // phone asks for notification permission there, on entering a world.
   gameMounted?(hostId: string): void;
+  // An offer only this player may answer reached a table on screen
+  // (src/shared/offer-notice.ts). The shell shows one system notification
+  // unless the app is in front and the card is in view; a tap sends an
+  // open-offer event. Answers whether one was shown. clearOfferNotice takes
+  // it away once the offer is settled.
+  offerNotice?(notice: OfferNotice, cardInView: boolean): Promise<boolean>;
+  clearOfferNotice?(offerId: string): Promise<void>;
   // The screens' theme (phase 29), so the shell's chrome and the OS
   // frame can follow the parchment or the night.
   setTheme?(mode: "dark" | "light"): Promise<void>;

@@ -21,6 +21,7 @@ import { createAndroidHomeFeed, HOME_CACHE_KEY } from "./home-feed";
 import { fetchCover, fetchIncoming, OdmDownload, renameIncoming, sweepCovers } from "./native-download";
 import { createShortCache, createTransitionDebounce } from "./throttle";
 import { createIdleStopper, IDLE_STOP_GRACE_MS } from "./world-idle";
+import { createAndroidOfferNotices } from "./offer-notices";
 import {
   createLocalWorld,
   LocalWorld,
@@ -338,14 +339,13 @@ function emit(event: ShellEvent): void {
 }
 
 // Android 13+ only shows notifications after a runtime POST_NOTIFICATIONS
-// grant, and connecting is the first moment they mean anything (session
-// reminders, turn alerts). Asked once per run; the system remembers a grant
-// or denial, so repeat connects never nag. Scaffolding only for now: server
-// pages run in the InAppBrowser webview, which does not grant the web
-// Notification API, so a follow-up must either enable notifications on that
-// webview (WebChromeClient permission grant in @capgo/inappbrowser) or
-// listen to the server's event stream natively and post through
-// LocalNotifications.schedule.
+// grant, and connecting is the first moment they mean anything. Asked once
+// per run, on entering a world (the web view below, or the native screens
+// through gameMounted); the system remembers a grant or denial, so repeat
+// connects never nag. The native screens post an offer only this player may
+// answer through LocalNotifications (offer-notices.ts). The web view
+// fallback does not grant the web Notification API, so its pages' own
+// notifications (session reminders) stay silent there.
 let notificationsAsked = false;
 
 async function ensureNotificationPermission(): Promise<void> {
@@ -360,6 +360,28 @@ async function ensureNotificationPermission(): Promise<void> {
     // A missing or denied permission must never block connecting.
   }
 }
+
+// An offer only this player may answer, from the native game screens
+// (src/shared/offer-notice.ts, offer-notices.ts): posted unless the app is
+// in front with the card in view, and a tap opens the table at the card.
+let appActive = true;
+void App.addListener("appStateChange", ({ isActive }) => {
+  appActive = isActive;
+});
+const offerNotices = createAndroidOfferNotices({
+  notifications: LocalNotifications,
+  foreground: () => appActive && document.visibilityState === "visible",
+});
+// A tap that launched the app may land before the shell UI listens; it is
+// held for the first listener.
+let heldEvent: ShellEvent | null = null;
+void LocalNotifications.addListener("localNotificationActionPerformed", (action) => {
+  const target = offerNotices.tapped(action);
+  if (!target) return;
+  const event: ShellEvent = { kind: "open-offer", ...target };
+  if (listeners.size) emit(event);
+  else heldEvent = event;
+});
 
 // ---------- Bluetooth dice (Web Bluetooth bridge for the game webview) ----------
 
@@ -1501,6 +1523,13 @@ const bridge: OdmBridge = {
       authorization: `Bearer ${session.token}`,
     });
   },
+  // Entering a world is when notifications first mean anything (an offer
+  // only this player may answer); the system asks once and remembers.
+  gameMounted(hostId) {
+    if (hostId) void ensureNotificationPermission();
+  },
+  offerNotice: (notice, cardInView) => offerNotices.show(notice, cardInView),
+  clearOfferNotice: (offerId) => offerNotices.clear(offerId),
 
   async listServers() {
     const servers = await loadServers();
@@ -1871,6 +1900,11 @@ const bridge: OdmBridge = {
 
   onEvent(listener) {
     listeners.add(listener);
+    if (heldEvent) {
+      const event = heldEvent;
+      heldEvent = null;
+      listener(event);
+    }
   },
 };
 

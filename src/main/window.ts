@@ -238,6 +238,18 @@ export class ShellWindow {
     this.win.focus();
   }
 
+  // Whether the player is looking at the main window: shown, not minimized
+  // and focused (an offer's notification stays quiet only then).
+  isForeground(): boolean {
+    const win = this.win;
+    return !!win && !win.isDestroyed() && win.isVisible() && !win.isMinimized() && win.isFocused();
+  }
+
+  // True for the main window's own page, not the table screen's.
+  isMainSender(sender: WebContents): boolean {
+    return !!this.win && !this.win.isDestroyed() && this.win.webContents === sender;
+  }
+
   whenPageReady(): Promise<void> {
     const contents = this.win?.webContents;
     if (!contents || !contents.isLoading()) return Promise.resolve();

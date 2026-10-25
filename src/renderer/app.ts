@@ -16,6 +16,7 @@ import { startGamepad } from "./gamepad.js";
 import { showShellToast } from "./toast.js";
 import { renderHome } from "./home.js";
 import { aiProgress, renderLocalAi } from "./local-ai.js";
+import { openOffer } from "./offer-open.js";
 import { renderAdd, renderAuth } from "./servers.js";
 import { escapeInGame, gameBack, isGameShowing, preloadGame, tryOpenNative } from "./game-screen.js";
 import { renderSettings, worldTransferPhase } from "./settings.js";
@@ -113,6 +114,11 @@ window.odm.onEvent((event) => {
     }
     repaintUpdatePopup();
     rerenderLive();
+  } else if (event.kind === "open-offer") {
+    // An offer's notification was tapped: its table, at its card, over
+    // whatever shell screen was laid on top.
+    closeOverlay();
+    void openOffer(event);
   } else if (event.kind === "join-request") {
     // A second pass at the same server (the address alone, once the code
     // has already brought us here) must not wipe the code: it is the whole

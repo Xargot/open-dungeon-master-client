@@ -280,6 +280,14 @@ export function mountedHostId(): string {
   return mountedHost;
 }
 
+// Moves the world on screen to one of its pages (an offer's table, from its
+// notification); false when no world is showing.
+export function gameNavigate(path: string): boolean {
+  if (!mount) return false;
+  if (mount.router.location.pathname !== path) mount.router.push(path);
+  return true;
+}
+
 // The device world, natively: only once it has a profile and is awake.
 export async function tryOpenNativeLocal(joinCode: string | undefined, path: string): Promise<boolean> {
   if (state.local.state === "unavailable") return false;

@@ -90,6 +90,10 @@ function main(): void {
   });
 
   void app.whenReady().then(async () => {
+    // Windows shows an app's notifications (an offer only this player may
+    // answer) under the id of its Start menu shortcut, which electron-builder
+    // names after appId.
+    if (process.platform === "win32") app.setAppUserModelId("com.opendungeonmaster.client");
     // A reset the previous run asked for (src/main/reset.ts) comes first,
     // before the registry, the world or any session opens the folder.
     const reset = await applyPendingReset(app.getPath("userData")).catch((err: unknown) => {

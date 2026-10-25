@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { app, dialog, ipcMain, nativeTheme, shell, type IpcMainInvokeEvent, type OpenDialogOptions, type SaveDialogOptions } from "electron";
+import { app, dialog, ipcMain, nativeTheme, Notification, shell, type IpcMainInvokeEvent, type OpenDialogOptions, type SaveDialogOptions } from "electron";
 import type {
   ServerProbe,
   AiSetup,
@@ -49,7 +49,9 @@ import { speechStatusFrom } from "../shared/speech";
 import { narrationSample, readNarration, saveNarration, soundLibrary, type WorldAdmin } from "../shared/world-media";
 import { coverRequestUrl, tableLookupOrigins, type HostInput } from "../shared/home-feed-logic";
 import { landingPath, safeInnerPath } from "../shared/open-path";
+import { appIconPath } from "./app-icon";
 import { createDesktopHomeFeed, fetchCoverImage } from "./home-feed";
+import { createDesktopOfferNotices } from "./offer-notices";
 import type { LocalAiManager } from "./local-ai/manager";
 import { unwireImageAi, wireImageAi, wireTextAi } from "./local-ai/wiring";
 import type { LocalServer } from "./local-server";
@@ -258,6 +260,23 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
   shellIpc.on("game:mounted", (event, hostId: unknown) => {
     mountedHosts.set(event.sender.id, str(hostId, 64));
   });
+  // An offer only this player may answer (src/main/offer-notices.ts). Only
+  // the main window's screens are heard: the table screen streams the same
+  // campaign and never shows the card.
+  const offerNotices = createDesktopOfferNotices({
+    supported: () => Notification.isSupported(),
+    create: (options) => new Notification(options),
+    foreground: () => win.isForeground(),
+    open(target) {
+      win.focus();
+      win.sendEvent({ kind: "open-offer", ...target });
+    },
+    icon: appIconPath(),
+  });
+  shellIpc.handle("offer:notify", (event, notice: unknown, cardInView: unknown) =>
+    win.isMainSender(event.sender) ? offerNotices.show(notice, cardInView) : false,
+  );
+  shellIpc.handle("offer:clear", (_event, offerId: unknown) => offerNotices.clear(offerId));
   shellIpc.handle("doc:open", async (event, docPath: unknown) => {
     const target = str(docPath, 300);
     if (!/^\/(uploads|generated)\/[A-Za-z0-9._/-]+\.pdf$/.test(target) || target.includes("..")) return false;

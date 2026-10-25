@@ -15,7 +15,10 @@ import { GameRouter, matchRoute } from "./router.js";
 import { setNavigation } from "./shims/next-navigation.js";
 import { resolvedParams } from "./params.js";
 import { installLocalAssets, installRuntime, uninstallRuntime } from "./runtime.js";
+import { installAutoFocus } from "./autofocus.js";
 import { useSyncExternalStore } from "preact/compat";
+
+installAutoFocus();
 
 type PageModule = { default: ComponentType<{ params: unknown; searchParams?: unknown }> };
 

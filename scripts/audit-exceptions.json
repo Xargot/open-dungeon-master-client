@@ -1,11 +1,4 @@
 {
   "note": "Advisories npm audit reports that are accepted for now, each with why and until when. scripts/check-audit.mjs fails on any high or critical advisory not listed here, and on any entry past its expiry, so an exception is looked at again rather than forgotten. Moderate advisories are reported but not gated: today that is the sprintf-js chain inside electron-builder's own Electron downloader (@electron/get > global-agent > roarr), which runs only on the release build machine.",
-  "exceptions": [
-    {
-      "advisory": "GHSA-vfj7-8cjw-p6xm",
-      "package": "braces",
-      "reason": "Desktop: reached only through @tailwindcss/cli > @parcel/watcher > micromatch > braces, the build-time CSS compiler running on this repo's own source globs. Mobile: reached only through patch-package > find-yarn-workspace-root > micromatch > braces, which applies this repo's own patches on install. Neither ships in an app or sees a pattern from a player or the network. No patched braces release exists, and npm's suggested fixes downgrade both tools.",
-      "expires": "2027-01-31"
-    }
-  ]
+  "exceptions": []
 }

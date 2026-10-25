@@ -26,6 +26,7 @@ thing; this page collects them in one place.
 | Portal mode and session cookies | `src/main/window.ts` + `src/main/session-cookies.ts` | `mobile/src/bridge.ts` | `src/shared/portal-logic.ts` |
 | Join links | `src/main/index.ts` | `mobile/src/bridge.ts` | `src/shared/deep-link.ts` |
 | Moving a world, landing paths | `src/main/ipc.ts` | `mobile/src/bridge.ts` | `src/shared/relocate.ts`, `src/shared/open-path.ts` |
+| Offer notifications (an offer only this player may answer) | `src/main/offer-notices.ts` + its `offer:notify` and `offer:clear` handlers in `src/main/ipc.ts` | `mobile/src/offer-notices.ts`, wired in `bridge.ts` | `src/shared/offer-notice.ts`; the game screens' side is `src/renderer/game/offer-watch.ts` |
 | Pixels dice (Web Bluetooth) | `src/main/bluetooth.ts` + `src/preload/bluetooth-picker.ts` (device picker) | `mobile/src/ble-polyfill.ts`, `ble-polyfill-core.ts`, `ble-relay.ts` (`navigator.bluetooth` polyfill) | none: each side fills a different gap, the game just sees `navigator.bluetooth` |
 
 ## Platform-only by design

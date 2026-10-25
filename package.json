@@ -1,6 +1,6 @@
 {
   "name": "open-dungeon-master-client",
-  "version": "0.20.1",
+  "version": "0.21.0",
   "private": true,
   "description": "Desktop client for Open Dungeon Master: connect to any server, or play fully offline",
   "license": "MIT",
@@ -45,7 +45,7 @@
     "@tailwindcss/cli": "^4.3.3",
     "@types/node": "^22",
     "clsx": "^2.1.1",
-    "electron": "^44.7.0",
+    "electron": "^44.9.3",
     "electron-builder": "^26.17.0",
     "esbuild": "^0.25.12",
     "eslint": "^9.30.0",
@@ -60,7 +60,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.0",
     "typescript-eslint": "^8.40.0",
-    "zod": "^4.5.4"
+    "zod": "^4.6.7"
   },
   "dependencies": {
     "electron-updater": "^6.8.9"
