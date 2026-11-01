@@ -7,6 +7,7 @@ import { autoConfirmBluetoothPairing, wireBluetoothChooser } from "./bluetooth";
 import { editMenu } from "./edit-menu";
 import { PORTAL_TOKEN_COOKIE } from "../shared/portal-logic";
 import { isShellCookieWrite } from "./session-cookies";
+import { nativeDiceOverlay } from "./native-dice-overlay";
 
 // One window. Its own page is the shell UI (server picker, login, wizard);
 // a connected server's web app renders in a WebContentsView layered on top,
@@ -111,7 +112,11 @@ export class ShellWindow {
       },
     });
     const contents = this.win.webContents;
-    contents.setWindowOpenHandler(({ url }) => {
+    const diceOverlay = nativeDiceOverlay(this.win);
+    contents.setWindowOpenHandler((details) => {
+      const overlay = diceOverlay(details);
+      if (overlay) return overlay;
+      const { url } = details;
       openExternally(url);
       return { action: "deny" };
     });

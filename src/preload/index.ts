@@ -6,6 +6,17 @@ import type { AiSetup, OdmBridge, ShellEvent } from "../shared/types";
 // connected servers' pages, which run in separate partitions with no bridge.
 
 const bridge: OdmBridge = {
+  nativeBoard: {
+    open: (key) => ipcRenderer.invoke("native-board:open", key),
+    send: (id, packet) => { void ipcRenderer.invoke("native-board:send", id, packet).catch(() => {}); },
+    layout: (id, layout) => { void ipcRenderer.invoke("native-board:layout", id, layout).catch(() => {}); },
+    close: (id) => ipcRenderer.invoke("native-board:close", id),
+    subscribe(id, listener) {
+      const handler = (_event: unknown, event: {id:string;packet:unknown}) => { if (event.id === id) listener(event.packet); };
+      ipcRenderer.on("native-board:message", handler);
+      return () => ipcRenderer.removeListener("native-board:message", handler);
+    },
+  },
   platform: "desktop",
   // A desktop has no motor; the screens ask and nothing happens.
   haptic: () => {},

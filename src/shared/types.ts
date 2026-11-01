@@ -6,6 +6,7 @@ import type { DeckChoice, DeckInfo, FieldRect } from "./deck";
 import type { OfferNotice, OfferTarget } from "./offer-notice";
 import type { StoryMemory, StoryMemoryStatus } from "./story-memory";
 import type { WorldPreview } from "./world-transfer";
+import type { NativeBoardApi } from "./native-board";
 
 export type SignupMode = "open" | "invite" | "closed";
 
@@ -480,6 +481,7 @@ export interface AccountDeletionResult {
 }
 
 export interface OdmBridge {
+  nativeBoard?: NativeBoardApi;
   // Lets the shared shell UI adapt copy and layout per shell.
   platform: "desktop" | "android";
   // What the device can draw (docs/vtt-parity-implementation-plan.md 18.2,

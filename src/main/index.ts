@@ -285,7 +285,7 @@ function main(): void {
             return Promise.resolve();
           }
         };
-        const share = settle(() => ipc?.shutdownShare() ?? Promise.resolve());
+        const share = settle(() => Promise.all([ipc?.shutdownShare(), ipc?.shutdownNative()]).then(() => {}));
         const ai = settle(() => localAi.stop());
         try {
           await Promise.race([share, cap]);

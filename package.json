@@ -45,7 +45,7 @@
     "@tailwindcss/cli": "^4.3.3",
     "@types/node": "^22",
     "clsx": "^2.1.1",
-    "electron": "^44.9.3",
+    "electron": "^44.10.0",
     "electron-builder": "^26.17.0",
     "esbuild": "^0.25.12",
     "eslint": "^9.30.0",
