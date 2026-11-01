@@ -273,6 +273,9 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     emit(owner, id, packet) {
       if (parent && !parent.isDestroyed() && parent.webContents.id === owner) parent.webContents.send("native-board:message", { id, packet });
     },
+    reload(owner) {
+      if (parent && !parent.isDestroyed() && parent.webContents.id === owner && mountedHosts.get(owner) === LOCAL_SERVER_ID) parent.webContents.reload();
+    },
   });
   if (nativeRegistration && parent) bindNativeBoardWindow(parent, nativeBoard);
   const nativeOwner = (event: IpcMainInvokeEvent): number => {

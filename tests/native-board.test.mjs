@@ -29,7 +29,8 @@ test('native view only launches its local registration; private pipes omit paren
     for await (const line of createInterface({input:process.stdin})) {
       const p=JSON.parse(line);
       if(p.type==='init') console.log(JSON.stringify({native:1,type:'ready'}));
-      if(p.type==='message') console.log(JSON.stringify({native:1,type:'message',message:{odm:1,type:'tile',x:2,y:3,secretPresent:!!process.env.ODM_NATIVE_TEST_SECRET}}));
+      if(p.type==='message' && p.message.type==='request-reload') console.log(JSON.stringify({native:1,type:'reload'}));
+      else if(p.type==='message') console.log(JSON.stringify({native:1,type:'message',message:{odm:1,type:'tile',x:2,y:3,secretPresent:!!process.env.ODM_NATIVE_TEST_SECRET}}));
       if(p.type==='close'){fs.writeFileSync(${JSON.stringify(path.join(root,'closed'))},'closed');process.exit(0);}
     }`);
   const config = path.join(root, 'native.json');
@@ -37,7 +38,8 @@ test('native view only launches its local registration; private pipes omit paren
   const registration = readNativeRegistration(config);
   const packets=[];
   process.env.ODM_NATIVE_TEST_SECRET='must-not-reach-addon';
-  const manager=new NativeBoard(registration,{node:process.execPath,parentWindow:'123',emit:(_owner,_id,p)=>packets.push(p)});
+  const reloads=[];
+  const manager=new NativeBoard(registration,{node:process.execPath,parentWindow:'123',emit:(_owner,_id,p)=>packets.push(p),reload:owner=>reloads.push(owner)});
   try {
     assert.equal(await manager.open(7,{addonId:'unregistered',viewId:'map'}),null);
     const opened=await manager.open(7,{addonId:'sample',viewId:'map'});
@@ -46,6 +48,9 @@ test('native view only launches its local registration; private pipes omit paren
     manager.send(7,opened.id,{odm:1,type:'snapshot',snapshot:{width:4,height:4}});
     for(let i=0;i<100&&!packets.length;i++) await new Promise(r=>setTimeout(r,10));
     assert.deepEqual(packets[0],{odm:1,type:'tile',x:2,y:3,secretPresent:false});
+    manager.send(7,opened.id,{type:'request-reload'});
+    for(let i=0;i<100&&!reloads.length;i++) await new Promise(r=>setTimeout(r,10));
+    assert.deepEqual(reloads,[7],'a native reload reaches its owning page');
     const layout={bounds:{x:0,y:0,width:100,height:80},occlusions:[],visible:true,scale:1};
     manager.layout(7,opened.id,layout);
     const stdin=manager.active.child.stdin;
@@ -54,10 +59,12 @@ test('native view only launches its local registration; private pipes omit paren
     assert.doesNotThrow(()=>manager.refreshLayout(),'a window move must not throw in the main process');
     delete stdin.writableLength;
     await assert.rejects(manager.close(8,opened.id),/Refused/);
-    await Promise.all([manager.close(7,opened.id),manager.close(7,opened.id)]);
+    const closing=Promise.all([manager.close(7,opened.id),manager.close(7,opened.id)]);
+    const reopening=manager.open(7,{addonId:'sample',viewId:'map'});
+    await closing;
     assert.equal(fs.readFileSync(path.join(root,'closed'),'utf8'),'closed');
     assert.throws(()=>manager.send(7,opened.id,{}),/Refused/);
-    const reopened=await manager.open(7,{addonId:'sample',viewId:'map'});
+    const reopened=await reopening;
     assert.ok(reopened?.id);
     await manager.close(7,reopened.id);
     fs.writeFileSync(config,JSON.stringify({addonId:'sample',viewId:'map',root,entry:'../outside.mjs'}));

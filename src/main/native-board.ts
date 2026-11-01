@@ -35,13 +35,17 @@ function deadline<T>(work: Promise<T>, ms: number): Promise<T> {
 type Active = {id:string; owner:number; child:ChildProcessWithoutNullStreams; exited:Promise<void>; stopped:boolean; closing:boolean; closed?:Promise<void>; layout?:unknown};
 export class NativeBoard {
   private active: Active | null = null;
+  private ownerRevision = 0;
   constructor(private registration: Registration | null, private options: {
-    node:string; parentWindow:string; emit:(owner:number,id:string,packet:unknown)=>void;
+    node:string; parentWindow:string; emit:(owner:number,id:string,packet:unknown)=>void; reload?:(owner:number)=>void;
   }) {}
 
   async open(owner:number,key:{addonId:string;viewId:string}):Promise<{id:string}|null> {
     const r=this.registration;
     if (!r || key?.addonId!==r.addonId || key?.viewId!==r.viewId) return null;
+    const revision=this.ownerRevision;
+    if (this.active?.closing) await this.active.closed;
+    if (revision!==this.ownerRevision) throw Error('Native view stopped during startup.');
     if (this.active) throw Error('A native view is already open.');
     const env:NodeJS.ProcessEnv={ELECTRON_RUN_AS_NODE:'1'};
     for(const name of ['SystemRoot','WINDIR','PATH','Path','TEMP','TMP','USERPROFILE','LOCALAPPDATA','APPDATA']) {
@@ -81,6 +85,7 @@ export class NativeBoard {
           const p=JSON.parse(line);
           if(p.native!==1) { fail();return; }
           if(p.type==='ready') resolveReady();
+          else if(p.type==='reload') { if(this.active===active && !active.closing) this.options.reload?.(owner); }
           else if(p.type==='message' && p.message && typeof p.message==='object') this.options.emit(owner,active.id,p.message);
           else { fail();return; }
         } catch { fail();return; }
@@ -146,7 +151,7 @@ export class NativeBoard {
       throw error;
     }
   }
-  async dispose():Promise<void> { if(this.active) await this.close(this.active.owner,this.active.id); }
+  async dispose():Promise<void> { this.ownerRevision++; if(this.active) await this.close(this.active.owner,this.active.id); }
 }
 
 // Ties the board to the window it draws in. A reload (View > Reload) or a
