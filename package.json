@@ -1,6 +1,6 @@
 {
   "name": "open-game-master-client",
-  "version": "0.22.3",
+  "version": "0.22.4",
   "private": true,
   "description": "Desktop client for Open Game Master: connect to any server, or play fully offline",
   "license": "MIT",

@@ -1,6 +1,6 @@
 {
   "name": "open-game-master-mobile",
-  "version": "0.22.3",
+  "version": "0.22.4",
   "private": true,
   "description": "Android client for Open Game Master: hosts a world on the phone, or connects to any server",
   "license": "MIT",
