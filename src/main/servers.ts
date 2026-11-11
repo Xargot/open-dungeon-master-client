@@ -368,6 +368,9 @@ export class ServerStore {
     token: string;
     tokenExpiresAt: string;
     secret?: string;
+    // The password the player typed for this sign-in, when there was one:
+    // it decides whether a kept made-up one is stale (src/shared/kept-secret.ts).
+    typedPassword?: string;
     instanceId?: string;
   }): StoredServer {
     const registry = this.load();
@@ -382,8 +385,15 @@ export class ServerStore {
           ));
     // A stored password belongs to one account. Signing in to the same
     // host as somebody else must not keep the old one, or the next renewal
-    // tries user B with A's password and burns B's login throttle.
+    // tries user B with A's password and burns B's login throttle. Nor
+    // does a typed password that differs from it, which shows it changed
+    // (src/shared/kept-secret.ts). A cipher this run cannot open is kept
+    // for a refresh, since another key may open it yet (renamed-key.ts).
     const sameAccount = !existing || existing.username === input.username;
+    const stale =
+      input.typedPassword !== undefined &&
+      !!existing?.secretCipher &&
+      this.crypt.decrypt(existing.secretCipher) !== input.typedPassword;
     const entry: StoredServer = {
       id: existing?.id ?? input.id ?? randomUUID(),
       origin: input.origin,
@@ -398,7 +408,7 @@ export class ServerStore {
       secretCipher:
         input.secret !== undefined
           ? this.crypt.encrypt(input.secret)
-          : sameAccount
+          : sameAccount && !stale
             ? existing?.secretCipher
             : undefined,
       instanceId: input.instanceId || existing?.instanceId,

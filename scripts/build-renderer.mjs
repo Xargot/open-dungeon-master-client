@@ -14,6 +14,7 @@
 import { build } from "esbuild";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { builtinModules } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { scopeCss } from "./scope-css.mjs";
@@ -67,7 +68,9 @@ export function preactDir() {
 // consults (src/shared/local-assets.ts): a host folder with a trailing
 // slash to the file names directly in it, sorted, so a path the app was
 // not built with still goes to the host.
-export const LOCAL_ASSET_FOLDERS = ["assets", "fx", "dice-box", "sidebar-icons"];
+// pdfjs: the PDF reader's worker and data files (server 0.34.0's adventure
+// import reads books in the page, so the app carries them to read offline).
+export const LOCAL_ASSET_FOLDERS = ["assets", "fx", "dice-box", "sidebar-icons", "pdfjs"];
 
 export function localAssetManifest(server) {
   const manifest = {};
@@ -150,6 +153,35 @@ function nextShimsOnlyPlugin(alias) {
   };
 }
 
+// A package the server's screens import must be installed here too. Where
+// the server checkout has its node_modules (a developer's machine, ci.yml)
+// its own files resolve their imports there first, so a package missing from
+// this repo still builds, while the release jobs check the server out bare
+// and fail on it (pdfjs-dist, client 0.25.0). With this, every build fails
+// the same way and names the package to add.
+function clientInstalledOnlyPlugin(server, alias) {
+  const serverSrc = path.join(server, "src") + path.sep;
+  const builtins = new Set(builtinModules);
+  return {
+    name: "odm-client-installed-only",
+    setup(build) {
+      build.onResolve({ filter: /^(?:@[^/]+\/)?[^./@][^:]*$/ }, (args) => {
+        if (!args.importer.startsWith(serverSrc)) return undefined;
+        const name = args.path.startsWith("@") ? args.path.split("/").slice(0, 2).join("/") : args.path.split("/")[0];
+        if (alias[args.path] || alias[name] || builtins.has(name)) return undefined;
+        if (fs.existsSync(path.join(repo, "node_modules", name, "package.json"))) return undefined;
+        return {
+          errors: [
+            {
+              text: `"${args.path}" is installed only in the server checkout: add "${name}" to this repo's package.json, at the server's version (the release jobs check the server out with no node_modules)`,
+            },
+          ],
+        };
+      });
+    },
+  };
+}
+
 // The game bundle's view of the world: React is Preact, Next's pieces are
 // the shims, "@/" is the server's src.
 export function gameBuildOptions(server) {
@@ -173,7 +205,7 @@ export function gameBuildOptions(server) {
     ...rendererBuildOptions,
     format: "esm",
     splitting: true,
-    plugins: [localAssetsPlugin(server), serverCssPlugin(), nextShimsOnlyPlugin(alias)],
+    plugins: [localAssetsPlugin(server), serverCssPlugin(), nextShimsOnlyPlugin(alias), clientInstalledOnlyPlugin(server, alias)],
     alias,
     define: { "process.env.NODE_ENV": '"production"' },
     // The server's sources import from its own node_modules (radix, lucide,

@@ -310,8 +310,9 @@ test("an rpm install downloads the package, installs it through pkexec and resta
   await updater.downloadAndInstall();
   const file = path.join(folder, "open-game-master-client-0.12.1-x86_64.rpm");
   assert.deepEqual(asked, [
-    // The check: does this release have an rpm at all.
-    "https://api.github.com/repos/Lebbitheplow/open-game-master-client/releases/tags/v0.12.1",
+    // The check: does this release have an rpm at all, asked of the
+    // download link rather than the rate-limited API.
+    "https://github.com/Lebbitheplow/open-game-master-client/releases/download/v0.12.1/open-game-master-client-0.12.1-x86_64.rpm",
     // The download: the rpm's checksum, then the rpm.
     "https://api.github.com/repos/Lebbitheplow/open-game-master-client/releases/tags/v0.12.1",
     "https://github.com/Lebbitheplow/open-game-master-client/releases/download/v0.12.1/open-game-master-client-0.12.1-x86_64.rpm",
@@ -893,6 +894,8 @@ test("a release published without this install's package is not offered to it", 
   const { Updater } = await import("../dist/main/updater.js");
   // The flatpak job failed: the release lists everything but the bundle.
   const listing = (url) => {
+    const download = /\/releases\/download\/v[^/]+\/(.+)$/.exec(String(url));
+    if (download) return new Response(null, { status: download[1].endsWith(".flatpak") ? 404 : 302 });
     const tag = /\/releases\/tags\/v([^/]+)$/.exec(String(url));
     const all = releaseListing(tag[1], PACKAGE);
     return Response.json({ assets: all.assets.filter((asset) => !asset.name.endsWith(".flatpak")) });
@@ -1082,5 +1085,183 @@ test("without the renamed app the move only starts the old flatpak again", async
     assert.deepEqual(run.lines, ["info com.opengamemaster.client", `run ${LEGACY_FLATPAK} --steam-deck`]);
   } finally {
     await run.cleanup();
+  }
+});
+
+// GitHub's API allows a network 60 anonymous calls an hour, and other
+// programs on the same connection can spend them: the launch check then
+// failed silently and the install failed on its checksum lookup. Versions
+// and listings now come from github.com itself.
+const rateLimited = () =>
+  new Response(JSON.stringify({ message: "API rate limit exceeded" }), {
+    status: 403,
+    headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 1800) },
+  });
+
+test("the latest version comes from the release page's redirect, not the API", async () => {
+  const { latestFromReleasePage, fetchLatestReleaseVersion } = await import("../dist/main/updater.js");
+  const asked = [];
+  const page = async (url, init) => {
+    asked.push([String(url), init?.method ?? "GET"]);
+    if (String(url).includes("api.github.com")) return rateLimited();
+    const res = new Response(null, { status: 200 });
+    Object.defineProperty(res, "url", { value: "https://github.com/Lebbitheplow/open-game-master-client/releases/tag/v0.23.3" });
+    return res;
+  };
+  assert.equal(await latestFromReleasePage(page), "0.23.3");
+  assert.equal(await fetchLatestReleaseVersion(page), "0.23.3");
+  assert.ok(asked.every(([url]) => !url.includes("api.github.com")), "the API was never asked");
+  // A page that would not say falls back to the API, and its rate limit is
+  // said as one.
+  const nowhere = async (url) => (String(url).includes("api.github.com") ? rateLimited() : new Response(null, { status: 500 }));
+  await assert.rejects(() => fetchLatestReleaseVersion(nowhere), /limiting update checks from this internet connection.*Try again after/);
+});
+
+test("the beta channel reads the release feed", async () => {
+  const { newestInFeed, fetchNewestReleaseVersion } = await import("../dist/main/updater.js");
+  const feed = `<?xml version="1.0"?><feed>
+    <entry><link rel="alternate" type="text/html" href="https://github.com/x/y/releases/tag/v0.20.7"/><content>&lt;a href=&quot;https://github.com/x/y/releases/tag/v9.9.9&quot;&gt;</content></entry>
+    <entry><link rel="alternate" type="text/html" href="https://github.com/x/y/releases/tag/v0.21.2"/></entry>
+    <entry><link rel="alternate" type="text/html" href="https://github.com/x/y/releases/tag/nightly"/></entry>
+  </feed>`;
+  assert.equal(newestInFeed(feed), "0.21.2", "links in release notes are not releases");
+  const asked = [];
+  const fetchImpl = async (url) => {
+    asked.push(String(url));
+    return new Response(feed, { status: 200 });
+  };
+  assert.equal(await fetchNewestReleaseVersion("beta", fetchImpl), "0.21.2");
+  assert.deepEqual(asked, ["https://github.com/Lebbitheplow/open-game-master-client/releases.atom"]);
+});
+
+test("a rate-limited checksum lookup falls back to the release's update feed", async () => {
+  const { releaseChecksum, sha512FromFeed, feedFileFor } = await import("../dist/main/updater.js");
+  const rpm = "open-game-master-client-0.23.3-x86_64.rpm";
+  const sha512 = createHash("sha512").update(PACKAGE).digest("base64");
+  const yml = `version: 0.23.3
+files:
+  - url: open-game-master-client-0.23.3-x86_64.AppImage
+    sha512: ${createHash("sha512").update("other").digest("base64")}
+    size: 1
+  - url: ${rpm}
+    sha512: ${sha512}
+    size: 4
+path: open-game-master-client-0.23.3-x86_64.AppImage
+`;
+  assert.equal(sha512FromFeed(yml, rpm), createHash("sha512").update(PACKAGE).digest("hex"));
+  assert.equal(sha512FromFeed(yml, "missing.rpm"), "");
+  assert.equal(feedFileFor(rpm), "latest-linux.yml");
+  assert.equal(feedFileFor("open-game-master-client-0.23.3-x64.tar.gz"), "");
+  const fetchImpl = async (url) => (String(url).endsWith("/latest-linux.yml") ? new Response(yml) : rateLimited());
+  assert.deepEqual(await releaseChecksum(fetchImpl, "0.23.3", rpm), {
+    algorithm: "sha512",
+    hex: createHash("sha512").update(PACKAGE).digest("hex"),
+  });
+  // A release from before SHA256SUMS lists the tar.gz nowhere else: the
+  // rate limit is what the player reads.
+  await assert.rejects(
+    () => releaseChecksum(fetchImpl, "0.23.3", "open-game-master-client-0.23.3-x64.tar.gz"),
+    /limiting update checks/,
+  );
+});
+
+test("SHA256SUMS vouches for every package, the tar.gz and flatpak included", async () => {
+  const { releaseChecksum, sha256FromSums } = await import("../dist/main/updater.js");
+  const tar = "open-game-master-client-0.24.0-x64.tar.gz";
+  const flatpak = "open-game-master-client-0.24.0-x86_64.flatpak";
+  const hex = createHash("sha256").update(PACKAGE).digest("hex");
+  const sums = `${"a".repeat(64)}  latest-linux.yml\n${hex}  ${tar}\n${"b".repeat(64)} *${flatpak}\n`;
+  assert.equal(sha256FromSums(sums, tar), hex);
+  assert.equal(sha256FromSums(sums, flatpak), "b".repeat(64), "binary-mode lines too");
+  assert.equal(sha256FromSums(sums, "nope.tar.gz"), "");
+  assert.equal(sha256FromSums(sums, "x64.tar.gz"), "", "a whole name, not a suffix");
+  const asked = [];
+  const fetchImpl = async (url) => {
+    asked.push(String(url));
+    return String(url).endsWith("/v0.24.0/SHA256SUMS") ? new Response(sums) : rateLimited();
+  };
+  assert.deepEqual(await releaseChecksum(fetchImpl, "0.24.0", tar), { algorithm: "sha256", hex });
+  assert.ok(asked.every((url) => !url.endsWith(".yml")), "the feed files are not needed");
+  // The API, when it answers, still comes first.
+  const api = async (url) =>
+    String(url).includes("api.github.com")
+      ? Response.json({ assets: [{ name: tar, digest: `sha256:${"c".repeat(64)}` }] })
+      : new Response(sums);
+  assert.equal((await releaseChecksum(api, "0.24.0", tar)).hex, "c".repeat(64));
+});
+
+test("an rpm downloads and installs while the API is rate limited", async () => {
+  const { Updater } = await import("../dist/main/updater.js");
+  const fsp = await import("node:fs/promises");
+  const folder = await tempFolder();
+  const rpm = "open-game-master-client-0.12.1-x86_64.rpm";
+  const yml = `files:\n  - url: ${rpm}\n    sha512: ${createHash("sha512").update(PACKAGE).digest("base64")}\n`;
+  const { host, log } = fakeHost({
+    downloadsDir: () => folder,
+    has: async (command) => ["pkexec", "dnf"].includes(command),
+    fetchImpl: async (url, init) => {
+      const at = String(url);
+      if (at.includes("api.github.com")) return rateLimited();
+      if (at.endsWith("/latest-linux.yml")) return new Response(yml);
+      if (init?.method === "HEAD") return new Response(null, { status: 302 });
+      return new Response(PACKAGE, { status: 200, headers: { "content-length": String(PACKAGE.byteLength) } });
+    },
+  });
+  const updater = new Updater("managed", "0.12.0", async () => "0.12.1", 0, host);
+  assert.equal((await updater.checkForUpdates()).available, true);
+  await updater.downloadAndInstall();
+  assert.equal(log.ran.length, 1);
+  assert.equal(updater.progress().state, "ready");
+  await fsp.rm(folder, { recursive: true, force: true });
+});
+
+test("a background check that fails is retried and logged, not dropped", async () => {
+  const { Updater } = await import("../dist/main/updater.js");
+  const lines = [];
+  let calls = 0;
+  const fetchLatest = async () => {
+    calls += 1;
+    if (calls === 1) throw new Error("getaddrinfo ENOTFOUND github.com");
+    return "0.12.1";
+  };
+  const updater = new Updater("managed", "0.12.0", fetchLatest, 0, { ...fakeHost().host, log: (line) => lines.push(line) });
+  updater.retryDelaysMs = [5];
+  updater.recheckMs = 60_000;
+  const found = new Promise((resolve) => updater.onStatus(() => resolve(updater.progress())));
+  // The retry timer is unref'd (it never keeps the app alive), so the test
+  // holds the event loop open itself.
+  const hold = setInterval(() => {}, 1000);
+  updater.checkOnStartup();
+  const progress = await found.finally(() => clearInterval(hold));
+  assert.equal(progress.state, "available");
+  assert.equal(progress.latest, "0.12.1");
+  assert.equal(calls, 2);
+  assert.match(lines[0], /Background update check failed: getaddrinfo ENOTFOUND/);
+});
+
+test("the background recheck waits while an install is under way", async () => {
+  const { Updater } = await import("../dist/main/updater.js");
+  let calls = 0;
+  const updater = new Updater("managed", "0.12.0", async () => {
+    calls += 1;
+    return "0.12.1";
+  }, 0, fakeHost().host);
+  updater.recheckMs = 5;
+  // A download the player started: a failed check reported on electron-
+  // updater's "error" event would otherwise mark it failed.
+  updater.state = { ...updater.progress(), state: "downloading", percent: 40 };
+  const hold = setInterval(() => {}, 1000);
+  try {
+    updater.checkOnStartup();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(calls, 0, "no check while the download runs");
+    assert.equal(updater.progress().state, "downloading");
+    updater.state = { ...updater.progress(), state: "idle", percent: 0 };
+    const progress = await new Promise((resolve) => updater.onStatus(() => resolve(updater.progress())));
+    assert.equal(progress.state, "available", "the next recheck runs once it is done");
+    assert.ok(calls >= 1);
+  } finally {
+    clearInterval(hold);
+    updater.recheckMs = 24 * 60 * 60_000;
   }
 });

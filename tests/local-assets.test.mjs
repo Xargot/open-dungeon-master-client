@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createLocalAssetIndex, localFolder } from "../dist/shared/local-assets.js";
+import { answersLocally, assetContentType, createLocalAssetIndex, localFolder } from "../dist/shared/local-assets.js";
 
 const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -35,6 +35,29 @@ test("a manifest that lists icons sends an unlisted icon to the host", () => {
   assert.equal(index.localPath("/assets/icons/glyph/die-d20.webp"), "game/icons/glyph/die-d20.webp");
   assert.equal(index.localPath("/assets/icons/glyph/newer-glyph.webp"), null);
   assert.equal(index.localPath("/assets/icons/cards/strike.webp"), null);
+});
+
+// A page's fetch for a carried file is answered by the app itself: a plain
+// read of a picture or a data file, never a write and never a catalogue,
+// whose content is the host's own.
+test("a fetch is answered locally for a read of anything but a catalogue", () => {
+  assert.equal(answersLocally("GET", "/assets/tiles/floor/grass.webp"), true);
+  assert.equal(answersLocally("get", "/pdfjs/pdf.worker.min.mjs"), true);
+  assert.equal(answersLocally("GET", "/pdfjs/cmaps/78-H.bcmap?x=1"), true);
+  assert.equal(answersLocally("GET", "/assets/tiles/manifest.json"), false, "a newer host may list art the app lacks");
+  assert.equal(answersLocally("GET", "/fx/manifest.JSON?v=3"), false);
+  assert.equal(answersLocally("POST", "/assets/tiles/floor/grass.webp"), false);
+  assert.equal(answersLocally("HEAD", "/assets/tiles/floor/grass.webp"), false);
+});
+
+test("an answer the shell builds names the type a host would", () => {
+  assert.equal(assetContentType("/assets/tiles/floor/grass.webp"), "image/webp");
+  assert.equal(assetContentType("/assets/themes/dawn.JPG?w=256"), "image/jpeg");
+  assert.equal(assetContentType("/dice-box/sounds/dicehit/hit1.mp3"), "audio/mpeg");
+  assert.equal(assetContentType("/pdfjs/pdf.worker.min.mjs"), "text/javascript");
+  assert.equal(assetContentType("/pdfjs/wasm/openjpeg.wasm"), "application/wasm");
+  assert.equal(assetContentType("/pdfjs/cmaps/78-H.bcmap"), "application/octet-stream");
+  assert.equal(assetContentType("/pdfjs.d/LICENSE"), "application/octet-stream", "a dot in a folder is not an extension");
 });
 
 // The build copied every file it listed to where the runtime will look.

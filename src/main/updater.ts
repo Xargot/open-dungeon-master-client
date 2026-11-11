@@ -40,6 +40,40 @@ const LATEST_RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest
 // Newest first by date, so one page holds the newest beta and anything
 // published after it.
 const RELEASES_API = `https://api.github.com/repos/${REPO}/releases?per_page=30`;
+// The release feed GitHub publishes for every repo: the newest releases,
+// prereleases included, drafts never.
+const RELEASES_ATOM = `https://github.com/${REPO}/releases.atom`;
+const USER_AGENT = { "User-Agent": "open-game-master-client" };
+
+// GitHub's API answers 60 calls an hour per internet connection without a
+// token, shared by every program behind it. Other software on the same
+// network (a bot polling the releases every few minutes) used that up, and
+// then the check at launch failed without a word and an install the player
+// asked for failed on its checksum lookup, until the hour turned over. So
+// versions and file listings come from github.com's own pages and release
+// files, which that limit does not touch; the API is only the fallback, and
+// the one place left that asks it first (a package's checksum) falls back
+// to the release's SHA256SUMS, then to its update feed files.
+const AFTER_STARTUP_RETRY_MS = [60_000, 5 * 60_000, 15 * 60_000];
+// While the app stays open, the check runs again this often.
+const RECHECK_MS = 6 * 60 * 60_000;
+
+// The error for an API answer that is not a release: a rate limit is said
+// as one, with when it lifts, instead of as a bare status code.
+function apiFailure(res: Response, what: string): Error {
+  const remaining = res.headers?.get?.("x-ratelimit-remaining");
+  if ((res.status === 403 || res.status === 429) && remaining === "0") {
+    const reset = Number(res.headers.get("x-ratelimit-reset")) * 1000;
+    const when = Number.isFinite(reset) && reset > Date.now()
+      ? ` Try again after ${new Date(reset).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`
+      : " Try again in a few minutes.";
+    return new LookupError(`GitHub is limiting update checks from this internet connection right now (too many recent requests from it).${when}`);
+  }
+  return new LookupError(`GitHub answered ${res.status} while ${what}.`);
+}
+
+// GitHub could not be asked (as opposed to answering "no").
+class LookupError extends Error {}
 
 const SELF_UPDATE_KINDS: ReadonlySet<InstallKind> = new Set(["appimage", "nsis"]);
 
@@ -102,6 +136,9 @@ export interface InstallHost {
   // Steam started this run (src/shared/deck.ts steamLaunched).
   launchedBySteam?: boolean;
   fetchImpl?: typeof fetch;
+  // One line for the updater's log file: checks that failed, installs that
+  // failed and why. Nothing else records them.
+  log?(line: string): void;
 }
 
 // Empty for the kinds that install themselves; shown next to "Update
@@ -256,13 +293,46 @@ export type LatestVersionFetcher = (channel: UpdateChannel) => Promise<string>;
 // rate limit. A 404 means no release has shipped yet, which is "nothing to
 // update to" rather than a failure worth showing the player.
 export async function fetchLatestReleaseVersion(fetchImpl: typeof fetch = fetch): Promise<string> {
+  const fromPage = await latestFromReleasePage(fetchImpl).catch(() => null);
+  if (fromPage) return fromPage;
   const res = await fetchImpl(LATEST_RELEASE_API, {
-    headers: { Accept: "application/vnd.github+json", "User-Agent": "open-game-master-client" },
+    headers: { Accept: "application/vnd.github+json", ...USER_AGENT },
   });
   if (res.status === 404) return "";
-  if (!res.ok) throw new Error(`GitHub answered ${res.status} while checking for updates.`);
+  if (!res.ok) throw apiFailure(res, "checking for updates");
   const body = (await res.json()) as { tag_name?: unknown };
   return versionFromTag(body.tag_name);
+}
+
+// The version github.com's "latest release" page redirects to
+// (/releases/tag/v0.23.3); null when it would not say.
+export async function latestFromReleasePage(fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  const res = await fetchImpl(RELEASES_URL, {
+    method: "HEAD",
+    headers: USER_AGENT,
+    redirect: "follow",
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) return null;
+  const tag = /\/releases\/tag\/([^/?#]+)$/.exec(typeof res.url === "string" ? res.url : "")?.[1];
+  return tag ? versionFromTag(decodeURIComponent(tag)) || null : null;
+}
+
+// The highest version in the release feed, prereleases included; null when
+// the feed would not say.
+export async function newestFromReleaseFeed(fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  const res = await fetchImpl(RELEASES_ATOM, { headers: USER_AGENT, signal: AbortSignal.timeout(20_000) });
+  if (!res.ok || typeof res.text !== "function") return null;
+  return newestInFeed(await res.text()) || null;
+}
+
+export function newestInFeed(xml: string): string {
+  let newest = "";
+  for (const match of xml.matchAll(/<link[^>]*\/releases\/tag\/([^"'?#]+)["']/g)) {
+    const version = versionFromTag(decodeURIComponent(match[1] ?? ""));
+    if (version && (!newest || isNewerVersion(version, newest))) newest = version;
+  }
+  return newest;
 }
 
 // The newest release the channel takes. Beta is the highest version among
@@ -270,11 +340,13 @@ export async function fetchLatestReleaseVersion(fetchImpl: typeof fetch = fetch)
 // since a fix to the stable line can be published after a newer beta.
 export async function fetchNewestReleaseVersion(channel: UpdateChannel, fetchImpl: typeof fetch = fetch): Promise<string> {
   if (channel !== "beta") return fetchLatestReleaseVersion(fetchImpl);
+  const fromFeed = await newestFromReleaseFeed(fetchImpl).catch(() => null);
+  if (fromFeed) return fromFeed;
   const res = await fetchImpl(RELEASES_API, {
-    headers: { Accept: "application/vnd.github+json", "User-Agent": "open-game-master-client" },
+    headers: { Accept: "application/vnd.github+json", ...USER_AGENT },
   });
   if (res.status === 404) return "";
-  if (!res.ok) throw new Error(`GitHub answered ${res.status} while checking for updates.`);
+  if (!res.ok) throw apiFailure(res, "checking for updates");
   const body = (await res.json()) as unknown;
   let newest = "";
   for (const release of Array.isArray(body) ? (body as { tag_name?: unknown; draft?: unknown }[]) : []) {
@@ -289,11 +361,16 @@ export async function fetchNewestReleaseVersion(channel: UpdateChannel, fetchImp
 // of the API rather than the host the file downloads from. A package whose
 // bytes do not hash to it is never opened, unpacked or installed.
 export async function releaseAssetDigest(fetchImpl: typeof fetch, version: string, asset: string): Promise<string> {
-  const res = await fetchImpl(`https://api.github.com/repos/${REPO}/releases/tags/v${version}`, {
-    headers: { Accept: "application/vnd.github+json", "User-Agent": "open-game-master-client" },
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) throw new Error(`GitHub answered ${res.status} while looking up version ${version}.`);
+  let res: Response;
+  try {
+    res = await fetchImpl(`https://api.github.com/repos/${REPO}/releases/tags/v${version}`, {
+      headers: { Accept: "application/vnd.github+json", ...USER_AGENT },
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (err) {
+    throw new LookupError(`GitHub could not be reached while looking up version ${version}: ${reason(err)}`);
+  }
+  if (!res.ok) throw apiFailure(res, `looking up version ${version}`);
   const body = (await res.json()) as { assets?: { name?: unknown; digest?: unknown }[] };
   const digest = Array.isArray(body.assets) ? body.assets.find((entry) => entry?.name === asset)?.digest : undefined;
   const match = typeof digest === "string" ? /^sha256:([0-9a-f]{64})$/.exec(digest) : null;
@@ -301,20 +378,94 @@ export async function releaseAssetDigest(fetchImpl: typeof fetch, version: strin
   return match[1]!;
 }
 
+// The update feed file electron-builder publishes beside a package, which
+// lists its SHA-512: the AppImage, rpm and deb in latest-linux.yml, the Mac
+// zips in latest-mac.yml, the Windows installer in latest.yml.
+export function feedFileFor(asset: string): string {
+  if (/\.(AppImage|rpm|deb)$/.test(asset)) return "latest-linux.yml";
+  if (/-mac\.zip$/.test(asset)) return "latest-mac.yml";
+  if (/\.exe$/.test(asset)) return "latest.yml";
+  return "";
+}
+
+// The hex SHA-512 a feed file lists for one of its files, "" if none.
+export function sha512FromFeed(yml: string, asset: string): string {
+  const lines = yml.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.replace(/^\s*-\s*/, "").trim() === `url: ${asset}`);
+  if (start < 0) return "";
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*-\s*url:/.test(line) || /^\S/.test(line)) break;
+    const value = /^\s*sha512:\s*(\S+)\s*$/.exec(line)?.[1];
+    if (value) {
+      const hex = Buffer.from(value, "base64").toString("hex");
+      return hex.length === 128 ? hex : "";
+    }
+  }
+  return "";
+}
+
+// The hex SHA-256 a SHA256SUMS file (release.yml's publish job) lists for
+// one file, "" if none. Lines are "<sha256>  <name>", or "<sha256> *<name>".
+export function sha256FromSums(sums: string, asset: string): string {
+  for (const line of sums.split(/\r?\n/)) {
+    const match = /^([0-9a-f]{64})\s+\*?(.+?)\s*$/i.exec(line);
+    if (match?.[2] === asset) return match[1]!.toLowerCase();
+  }
+  return "";
+}
+
+export interface ReleaseChecksum {
+  algorithm: "sha256" | "sha512";
+  hex: string;
+}
+
+// What a downloaded package must hash to: the SHA-256 GitHub's API lists
+// for it, or, when the API cannot be asked (rate limited, unreachable), the
+// release's SHA256SUMS, then the SHA-512 in its update feed file (releases
+// from before SHA256SUMS). A release the API answered for that lists no
+// checksum is still refused.
+export async function releaseChecksum(fetchImpl: typeof fetch, version: string, asset: string): Promise<ReleaseChecksum> {
+  try {
+    return { algorithm: "sha256", hex: await releaseAssetDigest(fetchImpl, version, asset) };
+  } catch (err) {
+    if (!(err instanceof LookupError)) throw err;
+    const releaseFile = async (name: string): Promise<string> => {
+      try {
+        const res = await fetchImpl(`https://github.com/${REPO}/releases/download/v${version}/${name}`, {
+          headers: USER_AGENT,
+          signal: AbortSignal.timeout(30_000),
+        });
+        return res.ok && typeof res.text === "function" ? await res.text() : "";
+      } catch {
+        return "";
+      }
+    };
+    const sha256 = sha256FromSums(await releaseFile("SHA256SUMS"), asset);
+    if (sha256) return { algorithm: "sha256", hex: sha256 };
+    const feed = feedFileFor(asset);
+    const sha512 = feed ? sha512FromFeed(await releaseFile(feed), asset) : "";
+    if (sha512) return { algorithm: "sha512", hex: sha512 };
+    // The API's reason is the one worth showing.
+    throw err;
+  }
+}
+
 // Whether a release lists a file of this name. The flatpak job is best
 // effort (release.yml), so a release can go out without its bundle; an
 // install that updates from that file is not told about a version it could
 // not install. A listing GitHub would not give says yes, and leaves the
 // download to say what is wrong.
+// Asked of the download link itself (a redirect when the file is there, 404
+// when it is not), not the API.
 export async function releaseHasAsset(fetchImpl: typeof fetch, version: string, asset: string): Promise<boolean> {
   try {
-    const res = await fetchImpl(`https://api.github.com/repos/${REPO}/releases/tags/v${version}`, {
-      headers: { Accept: "application/vnd.github+json", "User-Agent": "open-game-master-client" },
+    const res = await fetchImpl(`https://github.com/${REPO}/releases/download/v${version}/${asset}`, {
+      method: "HEAD",
+      headers: USER_AGENT,
+      redirect: "manual",
       signal: AbortSignal.timeout(30_000),
     });
-    if (!res.ok) return true;
-    const body = (await res.json()) as { assets?: { name?: unknown }[] };
-    return !Array.isArray(body.assets) || body.assets.some((entry) => entry?.name === asset);
+    return res.status !== 404;
   } catch {
     return true;
   }
@@ -383,6 +534,10 @@ export class Updater {
   private readonly listeners = new Set<() => void>();
   private updater: AppUpdater | null = null;
   private startupChecked = false;
+  private recheckTimer: ReturnType<typeof setTimeout> | null = null;
+  // The background check's waits, for the tests.
+  retryDelaysMs = AFTER_STARTUP_RETRY_MS;
+  recheckMs = RECHECK_MS;
   private found: UpdateStatus | null = null;
   private state: UpdateProgress = {
     state: "idle",
@@ -551,7 +706,16 @@ export class Updater {
     this.setProgress({ state: "ready", percent: 100, message: `Version ${version} is installed. Restarting...` });
   }
 
+  private note(line: string): void {
+    try {
+      this.host?.log?.(line);
+    } catch {
+      // A log that cannot be written is no reason to fail an update.
+    }
+  }
+
   private failed(err: unknown): void {
+    this.note(`Update to ${this.state.latest || "the latest version"} failed: ${reason(err)}`);
     if (this.state.state === "downloading" || this.state.state === "installing" || this.state.state === "ready") {
       this.setProgress({ state: "error", error: reason(err) });
     }
@@ -650,7 +814,10 @@ export class Updater {
     const { code, stderr } = await host.run("pkexec", args);
     // 126 is the player closing the password prompt; 127 is polkit saying no.
     if (code === 126) throw new Error(`The install was cancelled. Version ${version} is in your Downloads folder.`);
-    if (code !== 0) throw new Error(`The package manager could not install version ${version}${lastLine(stderr)}`);
+    if (code !== 0) {
+      this.note(`pkexec ${args.join(" ")} exited ${code}:\n${stderr.trim()}`);
+      throw new Error(`The package manager could not install version ${version}${lastLine(stderr)}`);
+    }
     await this.discard(file);
     this.installed(version);
     host.relaunch();
@@ -888,7 +1055,7 @@ export class Updater {
       idleTimer = setTimeout(() => idle.abort(new Error(`The download of ${asset} stalled. Try again.`)), PACKAGE_IDLE_MS);
     };
     try {
-      const expected = await releaseAssetDigest(fetcher, status.latest, asset);
+      const expected = await releaseChecksum(fetcher, status.latest, asset);
       stillAlive();
       const res = await fetcher(`https://github.com/${REPO}/releases/download/v${status.latest}/${asset}`, {
         headers: { "User-Agent": "open-game-master-client" },
@@ -898,7 +1065,7 @@ export class Updater {
       const total = Number(res.headers.get("content-length")) || 0;
       if (total > MAX_PACKAGE_BYTES) throw new Error(`${asset} is larger than any release package.`);
       const out = createWriteStream(partial);
-      const hash = createHash("sha256");
+      const hash = createHash(expected.algorithm);
       let done = 0;
       let shown = -1;
       const reader = res.body.getReader();
@@ -921,7 +1088,7 @@ export class Updater {
       }
       await new Promise<void>((resolve, reject) => out.end((err?: Error | null) => (err ? reject(err) : resolve())));
       clearTimeout(idleTimer);
-      if (hash.digest("hex") !== expected) {
+      if (hash.digest("hex") !== expected.hex) {
         throw new Error(`The download of ${asset} does not match the release's checksum, so nothing was installed. Try again.`);
       }
       await rename(partial, target);
@@ -949,23 +1116,53 @@ export class Updater {
     this.setProgress({ state: "ready", percent: 100, message: "Open Game Master is installed. Moving your servers and worlds into it..." });
   }
 
-  // One quiet background check per app run, once the page can hear the
-  // answer; failures stay silent because the player did not ask. The
-  // renderer hears about a hit via the progress event, which carries the
-  // full status so it can offer the right button without asking again, and
-  // a page that loads later still finds it through lastFound().
+  // A quiet background check once the page can hear the answer, then again
+  // every few hours while the app stays open; failures stay silent because
+  // the player did not ask, but are retried (a minute, five, fifteen) and
+  // logged instead of dropped, since a launch on a network that is not up
+  // yet, or a GitHub that says "not now", otherwise meant no notice until
+  // the next launch. The renderer hears about a hit via the progress event,
+  // which carries the full status so it can offer the right button without
+  // asking again, and a page that loads later still finds it through
+  // lastFound().
   checkOnStartup(pageReady: Promise<void> = Promise.resolve()): void {
     if (this.startupChecked || this.kind === "dev") return;
     this.startupChecked = true;
     void pageReady
       .then(() => new Promise<void>((resolve) => setTimeout(resolve, this.startupDelayMs)))
-      .then(() => this.checkForUpdates())
-      .then((status) => {
-        if (status.available) {
-          this.found = status;
-          this.setProgress({ state: "available", latest: status.latest, status });
-        }
-      })
-      .catch(() => undefined);
+      .then(() => this.backgroundCheck(0));
+  }
+
+  private async backgroundCheck(attempt: number): Promise<void> {
+    // An install under way is left alone: electron-updater reports a failed
+    // check on the same "error" event as a failed download, so a recheck
+    // that hit a network blip mid-download marked that download failed.
+    if (this.state.state === "downloading" || this.state.state === "installing" || this.state.state === "ready") {
+      this.checkAgainIn(this.recheckMs, 0);
+      return;
+    }
+    try {
+      const status = await this.checkForUpdates();
+      // An install under way owns the progress line.
+      if (status.available && (this.state.state === "idle" || this.state.state === "available")) {
+        this.found = status;
+        this.setProgress({ state: "available", latest: status.latest, status });
+      }
+      this.checkAgainIn(this.recheckMs, 0);
+    } catch (err) {
+      this.note(`Background update check failed: ${reason(err)}`);
+      const retry = this.retryDelaysMs[attempt];
+      this.checkAgainIn(retry ?? this.recheckMs, retry === undefined ? 0 : attempt + 1);
+    }
+  }
+
+  private checkAgainIn(ms: number, attempt: number): void {
+    if (this.recheckTimer) clearTimeout(this.recheckTimer);
+    this.recheckTimer = setTimeout(() => {
+      this.recheckTimer = null;
+      void this.backgroundCheck(attempt);
+    }, ms);
+    // Never what keeps the app (or a test run) alive.
+    this.recheckTimer.unref?.();
   }
 }

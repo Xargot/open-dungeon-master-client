@@ -27,6 +27,46 @@ export function localFolder(hostDir: string): string {
   return `game/public${hostDir}`;
 }
 
+// Whether a page's fetch for a host file the app carries may be answered
+// from the app's own copy. The board's painter reads its tiles and props
+// with fetch (the server's src/lib/battlemap/render/painted.ts), and so do
+// the PDF reader's worker and data files; left to the host, a board's first
+// paint asked it for some 130 pictures the app already holds. Only a plain
+// read is answered here, and never a catalogue: a picture at a path is the
+// same picture on every host, but a manifest.json lists what that host has,
+// and a host newer than the app may list art the app's own copy does not.
+export function answersLocally(method: string, hostPath: string): boolean {
+  if (method.toUpperCase() !== "GET") return false;
+  const clean = hostPath.split(/[?#]/, 1)[0] ?? hostPath;
+  return !clean.toLowerCase().endsWith(".json");
+}
+
+// The content type a host would name for a carried file, for an answer the
+// shell builds itself (the desktop reads the bytes over its bridge).
+const CONTENT_TYPES: Record<string, string> = {
+  webp: "image/webp",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  svg: "image/svg+xml",
+  mp3: "audio/mpeg",
+  ogg: "audio/ogg",
+  wav: "audio/wav",
+  js: "text/javascript",
+  mjs: "text/javascript",
+  json: "application/json",
+  wasm: "application/wasm",
+  ttf: "font/ttf",
+  woff2: "font/woff2",
+};
+
+export function assetContentType(hostPath: string): string {
+  const clean = hostPath.split(/[?#]/, 1)[0] ?? hostPath;
+  const dot = clean.lastIndexOf(".");
+  const extension = dot > clean.lastIndexOf("/") ? clean.slice(dot + 1).toLowerCase() : "";
+  return CONTENT_TYPES[extension] ?? "application/octet-stream";
+}
+
 export function createLocalAssetIndex(manifest: LocalAssetManifest): LocalAssetIndex {
   const dirs = new Map<string, Set<string>>();
   for (const [dir, files] of Object.entries(manifest)) dirs.set(dir, new Set(files));

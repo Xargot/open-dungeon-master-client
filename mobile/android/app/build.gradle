@@ -32,6 +32,9 @@ android {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+            // The server payload is xz already; deflating it again gains
+            // nothing and costs a second decode on every unpack.
+            noCompress 'xz'
         }
     }
     // One APK per ABI, and only the two the Node runtime exists for: the
@@ -103,6 +106,8 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
+    // Reads the xz-compressed server payload (WorldEnvironment.unpackPayload).
+    implementation "org.tukaani:xz:1.10"
     testImplementation "junit:junit:$junitVersion"
     // The platform's org.json is a stub in local unit tests; the payload
     // code reads its manifests with it.

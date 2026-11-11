@@ -672,7 +672,7 @@ is a leftover from the upstream Open Dungeon fork. So the app's behavior is
 Play-compliant today.
 
 It is still worth removing before you submit. The repo is public, the string
-ships inside `server-payload.zip` in the APK, and Play's Sexual Content and
+ships inside `server-payload.zip.xz` in the APK, and Play's Sexual Content and
 Profanity policy plus the Generative AI policy both prohibit apps that
 facilitate generating sexual content. If anyone reviewing the app or the
 source finds that prompt, "it is unreachable" is a much weaker answer than

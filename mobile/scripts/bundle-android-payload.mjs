@@ -1,12 +1,13 @@
 // Stages what the Android app needs to host a world on the phone:
 //
-//   android/app/src/main/assets/server-payload.zip   the server, from the
+//   android/app/src/main/assets/server-payload.zip.xz   the server, from the
 //       desktop payload at ../vendor/server (npm run bundle-server at the
 //       repo root) minus every native module, since the phone runs it on
 //       Node's built-in SQLite and has no GPU workers or voice SFU, and
 //       minus the art the app already carries in its web assets
 //       (www/game, built by npm run build here first), which
-//       WorldEnvironment.copyLocalAssets puts back when the zip is unpacked
+//       WorldEnvironment.copyLocalAssets puts back when the zip is unpacked;
+//       a stored zip compressed whole with xz (packPayload below)
 //   android/app/src/main/assets/server-payload.json  its odm-payload.json,
 //       read on the phone before unzipping to decide whether to upgrade
 //   android/app/src/main/jniLibs/<abi>/libnode.so    the Node runtime built
@@ -86,7 +87,72 @@ export function stageAndroidPayload(vendorDir, staging, manifest) {
   return { dropped, nested, localAssets, dangling };
 }
 
-// Everything below is the staging run itself; the function above is what tests import.
+// The asset WorldRuntime.java unpacks; its name says how to open it.
+export const PAYLOAD_ASSET = "server-payload.zip.xz";
+
+// Every entry the zip holds, folders first and then files grouped by
+// extension, with links followed the way `zip -r` follows them (a folder
+// reached twice through links is listed once per path, as zip would).
+// The order is what makes the payload small: xz sees the whole stored zip
+// as one stream, and the server's thousands of JS chunks, which share most
+// of their code, sit next to each other within its dictionary.
+export function payloadEntries(root) {
+  const out = [];
+  const walk = (rel, seen) => {
+    for (const name of fs.readdirSync(path.join(root, rel)).sort()) {
+      const child = rel ? `${rel}/${name}` : name;
+      const full = path.join(root, child);
+      const stat = fs.statSync(full, { throwIfNoEntry: false });
+      if (!stat) continue;
+      if (stat.isDirectory()) {
+        // A link back up its own path would never end; zip skips those too.
+        const real = fs.realpathSync(full);
+        if (seen.has(real)) continue;
+        out.push(`${child}/`);
+        walk(child, new Set([...seen, real]));
+      } else if (stat.isFile()) {
+        out.push(child);
+      }
+    }
+  };
+  walk("", new Set([fs.realpathSync(root)]));
+  const kind = (entry) => (entry.endsWith("/") ? "" : `.${path.posix.extname(entry)}`);
+  return out.sort((a, b) => {
+    const byKind = kind(a) < kind(b) ? -1 : kind(a) > kind(b) ? 1 : 0;
+    return byKind || (a < b ? -1 : a > b ? 1 : 0);
+  });
+}
+
+// Writes the staged tree as a stored zip compressed whole with xz. A zip
+// deflated per file came to 35 MB for 0.32.1's payload, as each file was
+// squeezed alone; the same tree as one xz stream is about 10 MB, a quarter
+// of the APK. The dictionary is 32 MiB, not -9's 64: the phone holds it
+// in its Java heap while it unpacks, and the larger one saves under 1 MB.
+// One thread keeps it one block, which XZ for Java reads as a stream.
+export function packPayload(staging, out) {
+  const stored = `${out}.zip-tmp`;
+  fs.rmSync(stored, { force: true });
+  fs.rmSync(out, { force: true });
+  try {
+    execFileSync("zip", ["-q", "-X", "-0", "-@", stored], {
+      cwd: staging,
+      input: payloadEntries(staging).join("\n"),
+      stdio: ["pipe", "inherit", "inherit"],
+    });
+    const fd = fs.openSync(out, "w");
+    try {
+      execFileSync("xz", ["--format=xz", "--lzma2=preset=9e,dict=32MiB", "--threads=1", "--stdout", stored], {
+        stdio: ["ignore", fd, "inherit"],
+      });
+    } finally {
+      fs.closeSync(fd);
+    }
+  } finally {
+    fs.rmSync(stored, { force: true });
+  }
+}
+
+// Everything below is the staging run itself; the functions above are what tests import.
 function main() {
   if (!fs.existsSync(path.join(vendor, "odm-payload.json"))) {
     console.error(`No server payload at ${vendor}; run "npm run bundle-server" at the repo root first.`);
@@ -104,14 +170,13 @@ function main() {
     console.log(`Dropped from the payload: ${[...report.dropped, ...report.nested].join(", ")}`);
     console.log(`Left out ${report.localAssets} art files the app carries; ${report.dangling} dangling aliases removed`);
     fs.mkdirSync(assets, { recursive: true });
-    const zip = path.join(assets, "server-payload.zip");
-    fs.rmSync(zip, { force: true });
-    // Deflated as far as zip goes: the APK packer deflates the asset again
-    // and gains nothing on it, so this pass is the one that sets the size.
-    execFileSync("zip", ["-q", "-r", "-X", "-9", zip, "."], { cwd: staging, stdio: "inherit" });
+    // The deflated zip earlier builds wrote, so a local tree does not ship both.
+    fs.rmSync(path.join(assets, "server-payload.zip"), { force: true });
+    const packed = path.join(assets, PAYLOAD_ASSET);
+    packPayload(staging, packed);
     fs.copyFileSync(path.join(vendor, "odm-payload.json"), path.join(assets, "server-payload.json"));
-    const size = (fs.statSync(zip).size / 1024 / 1024).toFixed(1);
-    console.log(`Server payload zipped: ${size} MB`);
+    const size = (fs.statSync(packed).size / 1024 / 1024).toFixed(1);
+    console.log(`Server payload packed: ${size} MB`);
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }

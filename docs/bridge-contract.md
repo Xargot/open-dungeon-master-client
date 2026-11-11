@@ -43,6 +43,7 @@ them that way unless the platform gap closes.
 | Bridge rate limiters (`throttle.ts`) | Android | The native status call is expensive on the phone. |
 | In-app updater (`updater.ts`) | Desktop | The store owns updates on Android; its `updateCheck` answers "nothing to do". |
 | Story memory model choice (`src/shared/story-memory.ts`) | Desktop | The phone payload leaves the embedding runtime out. |
+| `odm.readAsset` (`src/main/local-asset-read.ts`, the `asset:read` handler) | Desktop | A page's fetch for art the app carries (the board painter's tiles and props) is answered from the app's own copy. The phone's page fetches the files beside it; the desktop's is a file and cannot, so the shell reads them for it (`src/shared/local-assets.ts`, `answersLocally`). |
 
 ## Rules
 

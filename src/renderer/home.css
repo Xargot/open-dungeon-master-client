@@ -726,9 +726,9 @@
   background: #575170;
   transition: background-color var(--dur-beat) var(--ease-snap), box-shadow var(--dur-beat) var(--ease-snap);
 }
-.tt-status-awake .tt-lamp { background: var(--tt-gold); box-shadow: 0 0 8px var(--tt-gold); animation: tt-lamp 2.6s ease-in-out infinite; }
+.tt-status-awake .tt-lamp { background: var(--tt-gold); box-shadow: 0 0 11px var(--tt-gold); animation: tt-lamp 2.6s ease-in-out infinite; }
 .tt-status-dozing .tt-lamp { background: var(--tt-ember); box-shadow: 0 0 8px var(--tt-ember); }
-.tt-status-wait .tt-lamp { animation: tt-lamp 1.2s ease-in-out infinite; }
+.tt-status-wait .tt-lamp { box-shadow: 0 0 11px currentColor; animation: tt-lamp 1.2s ease-in-out infinite; }
 
 /* ---- save slots: your tables along the bottom edge, by host ---- */
 
@@ -1010,6 +1010,7 @@
   border-radius: 9999px;
   color: #e3c15c;
   background: #e3c15c;
+  box-shadow: 0 0 9px currentColor;
   animation: tt-lamp 2.6s ease-in-out infinite;
 }
 .tt-slot-title {
@@ -1232,9 +1233,12 @@
   60% { text-shadow: 0 0 28px rgba(212, 171, 58, 0.8); }
   to { opacity: 1; transform: none; text-shadow: 0 0 20px rgba(212, 171, 58, 0.45); }
 }
+/* The lamp breathes by its opacity alone, under a glow that stands still:
+   a shadow that changes size is painted on the main thread sixty times a
+   second for as long as the screen is open, for a dot of seven pixels. */
 @keyframes tt-lamp {
-  0%, 100% { box-shadow: 0 0 8px currentColor; opacity: 1; }
-  50% { box-shadow: 0 0 14px currentColor; opacity: 0.75; }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 @keyframes tt-pop {
   from { transform: scale(0.7); }
@@ -1711,6 +1715,11 @@ html[data-theme="light"] .tt-first > .topbar.tt-header .wordmark { color: var(--
    again keeps a table that ends at the bottom of the window. */
 .game-root { --game-top: 0px; }
 .game-root {
+  /* The server's names for the interface face and the fixed-width face
+     (its layout.tsx). The two below them are what it called them before
+     the interface face changed, for a build against an older server. */
+  --font-ui: var(--font-sans);
+  --font-code-face: var(--font-mono);
   --font-geist-sans: var(--font-sans);
   --font-geist-mono: var(--font-mono);
   --font-source-serif: "Source Serif 4", Georgia, "Times New Roman", serif;

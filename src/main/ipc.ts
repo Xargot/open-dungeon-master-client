@@ -52,6 +52,7 @@ import { landingPath, safeInnerPath } from "../shared/open-path";
 import { appIconPath } from "./app-icon";
 import { createDesktopHomeFeed, fetchCoverImage } from "./home-feed";
 import { createDesktopOfferNotices } from "./offer-notices";
+import { createLocalAssetReader } from "./local-asset-read";
 import type { LocalAiManager } from "./local-ai/manager";
 import { unwireImageAi, wireImageAi, wireTextAi } from "./local-ai/wiring";
 import type { LocalServer } from "./local-server";
@@ -254,6 +255,11 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     const token = id ? store.token(id) : null;
     return origin && token ? { origin, token } : null;
   });
+  // A picture the app carries, for the game screens' fetch (the board's
+  // painter): read from the bundle instead of asked of the host
+  // (src/main/local-asset-read.ts).
+  const readLocalAsset = createLocalAssetReader(path.join(__dirname, "..", "renderer"));
+  shellIpc.handle("asset:read", (_event, hostPath: unknown) => readLocalAsset(hostPath));
   // A host document the game screens ask to open (a lore entry's PDF): the
   // shell fetches it with the session of the host on screen and hands it to
   // the system viewer. The page cannot do it itself: a link would open the
@@ -543,6 +549,9 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     // Kept like the device world's own profile so the session can be
     // renewed later without asking for something nobody was ever told.
     secret?: string,
+    // The password the player typed, when there was one: a kept made-up
+    // one that differs is stale (src/shared/kept-secret.ts).
+    typedPassword?: string,
   ): Promise<Result<{ server: ServerSummary }>> => {
     let name = "";
     let instanceId = "";
@@ -561,6 +570,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
       tokenExpiresAt: grant.expiresAt,
       instanceId,
       ...(secret ? { secret } : {}),
+      ...(typedPassword !== undefined ? { typedPassword } : {}),
     });
     await attachRemote(entry, grant.token, joinCode);
     return { ok: true, server: summaryOf(entry) };
@@ -795,8 +805,9 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     try {
       const origin = normalizeOrigin(str(input?.origin, 300));
       if (!origin) return fail(new Error("Bad server address."));
-      const grant = await loginForToken(origin, str(input?.username, 24), str(input?.password, 100));
-      return await adoptGrant(origin, grant, joinCodeOf(input?.joinCode));
+      const password = str(input?.password, 100);
+      const grant = await loginForToken(origin, str(input?.username, 24), password);
+      return await adoptGrant(origin, grant, joinCodeOf(input?.joinCode), undefined, password);
     } catch (err) {
       return fail(err);
     }
@@ -918,7 +929,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     }
   });
 
-  const adoptLocalGrant = (grant: TokenGrant, secret?: string): void => {
+  const adoptLocalGrant = (grant: TokenGrant, secret?: string, typedPassword?: string): void => {
     store.upsert({
       id: LOCAL_SERVER_ID,
       origin: "local",
@@ -927,6 +938,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
       token: grant.token,
       tokenExpiresAt: grant.expiresAt,
       secret,
+      typedPassword,
     });
   };
 
@@ -983,12 +995,11 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
   shellIpc.handle("local:login", async (_event, input: Record<string, unknown>) => {
     try {
       await local.start();
-      const grant = await loginForToken(
-        local.origin,
-        str(input?.username, 24),
-        str(input?.password, 100),
-      );
-      adoptLocalGrant(grant);
+      const password = str(input?.password, 100);
+      const grant = await loginForToken(local.origin, str(input?.username, 24), password);
+      // The form is only asked for once the kept profile password no
+      // longer signs in, so the typed one shows it stale.
+      adoptLocalGrant(grant, undefined, password);
       // In the background: the sign-in has succeeded whatever the broker
       // says, and a slow DELETE must not hold it (or fail it).
       void syncPublicUrl();
@@ -1582,9 +1593,9 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     else await shell.openPath(app.getPath("userData"));
   });
 
-  shellIpc.handle("local-ai:scan", async () => {
+  shellIpc.handle("local-ai:scan", async (_event, gpuId: unknown) => {
     try {
-      const result = await localAi.scan();
+      const result = await localAi.scan(typeof gpuId === "string" ? str(gpuId, 200) : undefined);
       return { ok: true, ...result };
     } catch (err) {
       return fail(err);

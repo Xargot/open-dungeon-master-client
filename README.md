@@ -65,7 +65,10 @@ The latest stable release is on the
 [Releases page](https://github.com/Lebbitheplow/open-game-master-client/releases/latest).
 Every build ships first as a beta (marked Pre-release there) and is promoted to stable
 unchanged once it holds up; the desktop app offers the betas too with App settings >
-This app > Beta updates. How the channels work:
+This app > Beta updates. To download the current beta, use the
+[beta channel](https://opengamemaster.com/download/#beta) on opengamemaster.com: it
+lists every file of the newest pre-release while one is newer than the stable release,
+and says when there is none. How the channels work:
 [releases.md](https://github.com/Lebbitheplow/open-game-master/blob/main/docs/releases.md).
 More help lives in the [knowledge base](https://opengamemaster.com/guide/):
 installing on [Windows](https://opengamemaster.com/guide/desktop/install-windows/),
@@ -409,7 +412,12 @@ desktop with nothing left to stop it. It must answer
 view-to-host packets as { "native": 1, "type": "message", "message": {
 "odm": 1, "type": "ready" } } (or another documented board message). Send
 the board ready message after receiving the first snapshot: the shell
-subscribes to view messages after the transport ready response.
+subscribes to view messages after the transport ready response. A Ctrl+R
+pressed in the native window never reaches the app's menu, so the program
+may send { "native": 1, "type": "reload" } to reload the game page it draws
+for, as View > Reload does. The app honours it only while the view is open
+and its page shows the local world; the reload closes the view, and the
+page's next open waits for the old program to exit.
 Each JSON packet is one line and at most 4 MiB. Standard error is drained
 without being saved; only an allowlist of ordinary Windows environment
 variables reaches the child.

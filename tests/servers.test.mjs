@@ -372,6 +372,24 @@ test("a stored password does not follow a different account onto the same host",
   assert.equal(store.secret(first.id), null);
 });
 
+test("a typed password that differs from the kept made-up one drops it; a refresh or the same password keeps it", () => {
+  const { store } = freshStore();
+  const entry = store.upsert({ origin: "https://a.example", name: "A", username: "wren", token: "tok1", tokenExpiresAt: future, secret: "minted" });
+  // A renewal or a Discord sign-in proves no password: kept.
+  store.upsert({ origin: "https://a.example", name: "A", username: "wren", token: "tok2", tokenExpiresAt: future });
+  assert.equal(store.secret(entry.id), "minted");
+  store.upsert({ origin: "https://a.example", name: "A", username: "wren", token: "tok3", tokenExpiresAt: future, typedPassword: "minted" });
+  assert.equal(store.secret(entry.id), "minted");
+  // The player changed the password inside the game and signed in with the
+  // new one: the made-up one would fail at every renewal from now on.
+  store.upsert({ origin: "https://a.example", name: "A", username: "wren", token: "tok4", tokenExpiresAt: future, typedPassword: "hunter22" });
+  assert.equal(store.secret(entry.id), null);
+  // The device world's profile the same way.
+  store.upsert({ id: LOCAL_SERVER_ID, origin: "local", name: "This computer", username: "kaleb", token: "t", tokenExpiresAt: future, secret: "made-up" });
+  store.upsert({ id: LOCAL_SERVER_ID, origin: "local", name: "This computer", username: "kaleb", token: "t2", tokenExpiresAt: future, typedPassword: "chosen-later" });
+  assert.equal(store.secret(LOCAL_SERVER_ID), null);
+});
+
 test("published room codes survive a restart so they can be taken offline", () => {
   const { store } = freshStore();
   assert.deepEqual(store.publishedCodes(), []);

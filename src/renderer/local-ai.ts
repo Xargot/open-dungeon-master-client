@@ -227,6 +227,9 @@ function localAiStatusCard(status: LocalAiStatus | null): HTMLElement | null {
           ? "running (a server started outside the app answers on its port)"
           : "running";
     grow.append(el("div", "detail", `${status.installedLabel || "Story model"}${utility}: ${state}.`));
+    // Which build and which card, so "it runs on my integrated graphics"
+    // can be seen here rather than guessed from the speed.
+    if (status.engine) grow.append(el("div", "detail", `Engine: ${status.engine}.`));
     // What stopped it, in the manager's words: a missing engine, a crash
     // with its exit code, a server that keeps dying. Without this line a
     // stopped AI only ever surfaced as a failed turn in the campaign.
@@ -339,9 +342,44 @@ function renderLocalAiTiers(hardware: HardwareInfo, tiers: LocalAiTier[]): void 
         ? `${gpu}: ${memory}. Greyed-out choices need more memory.`
         : `${gpu}: ${memory}. A local storyteller needs at least ${LOCAL_AI_MINIMUM_GB} GB of graphics memory (24 GB of memory on a Mac), so this machine is below it. Your OpenAI key, an agent you already have or a human Game Master runs the table here instead.`,
     ),
+    gpuPicker(hardware),
     choices,
     needsLine,
   );
+}
+
+// More than one graphics adapter (an integrated GPU beside a card, two
+// cards): the player says which one runs the storyteller. The scan's pick
+// (the discrete card with the most memory) comes preselected; a change
+// re-sizes the choices below and is kept for the install and every start.
+function gpuPicker(hardware: HardwareInfo): HTMLElement | null {
+  const gpus = hardware.gpus ?? [];
+  if (gpus.length < 2) return null;
+  const wrap = el("label", "", "Graphics card for the storyteller");
+  const select = el("select");
+  for (const gpu of gpus) {
+    const memory = gpu.integrated ? "integrated, shares system memory" : `${gpu.vramGb} GB`;
+    const option = el("option", "", `${gpu.name} (${memory})`);
+    option.value = gpu.id;
+    select.append(option);
+  }
+  select.value = hardware.gpuId ?? "";
+  select.addEventListener("change", () => {
+    const gpuId = select.value;
+    localFit = null;
+    show("narrow", loadingScreen("Checking this machine", "Sizing the storytellers for that graphics card..."));
+    void window.odm.localAiScan(gpuId).then((result) => {
+      if (!result.ok) {
+        renderError(result.error);
+        return;
+      }
+      renderLocalAiTiers(result.hardware, result.tiers);
+    });
+  });
+  wrap.append(select);
+  const card = formCard(wrap);
+  card.style.marginBottom = "1rem";
+  return card;
 }
 
 function progressCard(label: HTMLElement): { card: HTMLElement; fill: HTMLElement } {

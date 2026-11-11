@@ -3,7 +3,6 @@ import test from "node:test";
 import {
   CATALOG,
   catalogEntry,
-  llamaArchiveUrl,
   meetsMinimum,
   memoryBudgetGb,
   presetFor,
@@ -15,6 +14,7 @@ import {
 } from "../dist/main/local-ai/catalog.js";
 import { hfFileInfo, magicOk } from "../dist/main/local-ai/download.js";
 import { pickWindowsGpu, readWindowsAdapters } from "../dist/main/local-ai/hardware.js";
+import { enginePlan } from "../dist/main/local-ai/engine.js";
 
 const gamingPc = {
   platform: "linux",
@@ -46,11 +46,11 @@ const mac = {
   unifiedMemory: true,
 };
 
-test("llama archive URLs exist for the three shipped platforms only", () => {
-  assert.ok(llamaArchiveUrl("linux", "x64")?.includes("ubuntu-vulkan-x64"));
-  assert.ok(llamaArchiveUrl("win32", "x64")?.includes("win-vulkan-x64"));
-  assert.ok(llamaArchiveUrl("darwin", "arm64")?.includes("macos-arm64"));
-  assert.equal(llamaArchiveUrl("linux", "arm64"), null);
+test("llama archives exist for the three shipped platforms only", () => {
+  assert.ok(enginePlan("linux", "x64", null)?.files[0].includes("ubuntu-vulkan-x64"));
+  assert.ok(enginePlan("win32", "x64", null)?.files[0].includes("win-vulkan-x64"));
+  assert.ok(enginePlan("darwin", "arm64", null)?.files[0].includes("macos-arm64"));
+  assert.equal(enginePlan("linux", "arm64", null), null);
 });
 
 test("the ladder is ordered largest first and ends with gpt-oss-20b, the 16 GB minimum", () => {

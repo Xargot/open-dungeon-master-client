@@ -19,6 +19,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 import java.util.ArrayList;
+import java.util.Locale;
 
 /**
  * The phone's own speech recognizer, for dictating into the game when the
@@ -33,7 +34,9 @@ import java.util.ArrayList;
  * phone); the default one (often Google's, online) is the fallback.
  *
  * available() -> { available, onDevice }
- * start()     -> resolves once listening; asks for the microphone first
+ * start({ language? }) -> resolves once listening; asks for the microphone
+ *                 first. language is the table's BCP 47 tag ("it"); the
+ *                 phone's own language when unsaid or the same.
  * stop()      -> { text }
  * cancel()
  * events: level { level: 0..1 }, partial { text }, error { message }
@@ -52,6 +55,9 @@ public class DictationPlugin extends Plugin {
     private final Handler main = new Handler(Looper.getMainLooper());
     private SpeechRecognizer recognizer;
     private boolean onDevice;
+    // The table's language when it is not the phone's own, else "": the
+    // take asks for it (RecognizerIntent.EXTRA_LANGUAGE).
+    private String language = "";
     // Every finished session's words, in order.
     private final StringBuilder heard = new StringBuilder();
     // The session in progress, as the recognizer currently hears it.
@@ -136,10 +142,29 @@ public class DictationPlugin extends Plugin {
                 call.reject("This phone has no speech recognizer.");
                 return;
             }
+            language = wanted(call.getString("language", ""));
             listening = true;
             listen();
             call.resolve();
         });
+    }
+
+    // The table's language, unless it is the phone's own: a phone set to
+    // British English keeps its "en-GB" at an English table rather than being
+    // told plain "en". Norwegian is one language here whichever written form
+    // the phone or the table names.
+    private static String wanted(String tag) {
+        String asked = tag == null ? "" : tag.trim();
+        if (asked.isEmpty()) {
+            return "";
+        }
+        String table = norwegian(Locale.forLanguageTag(asked).getLanguage());
+        String own = norwegian(Locale.getDefault().getLanguage());
+        return table.isEmpty() || table.equals(own) ? "" : asked;
+    }
+
+    private static String norwegian(String code) {
+        return "no".equals(code) || "nn".equals(code) ? "nb" : code;
     }
 
     private void listen() {
@@ -155,6 +180,9 @@ public class DictationPlugin extends Plugin {
         intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
         intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
         intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getContext().getPackageName());
+        if (!language.isEmpty()) {
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, language);
+        }
         // A DM pauses to think; ask for patience (not every recognizer
         // honours it, which is why sessions restart below).
         intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L);
@@ -318,6 +346,15 @@ public class DictationPlugin extends Plugin {
                 && (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED || error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE);
             if (languageMissing && onDevice && SpeechRecognizer.isRecognitionAvailable(getContext())) {
                 onDevice = false;
+                teardown();
+                listen();
+                return;
+            }
+            // Neither recognizer knows the table's language: hear the
+            // phone's own rather than nothing, as a take did before the
+            // table's language was asked for.
+            if (languageMissing && !language.isEmpty()) {
+                language = "";
                 teardown();
                 listen();
                 return;

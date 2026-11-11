@@ -11,9 +11,15 @@ export interface Handle {
   remove(): Promise<void>;
 }
 
+// What a take is told: the table's language as a BCP 47 tag ("it"), when the
+// page is a campaign's. Unsaid, the phone hears its own language.
+export interface DictationOptions {
+  language?: string;
+}
+
 export interface DictationPlugin {
   available(): Promise<{ available: boolean; onDevice: boolean }>;
-  start(): Promise<void>;
+  start(options: DictationOptions): Promise<void>;
   stop(): Promise<{ text: string }>;
   cancel(): Promise<void>;
   addListener(event: "level", listener: (event: { level: number }) => void): Promise<Handle>;
@@ -24,11 +30,14 @@ export interface DictationPlugin {
 // The shape window.odmDictation takes, repeated here so the shell does not
 // import server code.
 export interface NativeDictation {
-  start(handlers: {
-    onLevel?: (level: number) => void;
-    onPartial?: (text: string) => void;
-    onError?: (message: string) => void;
-  }): Promise<void>;
+  start(
+    handlers: {
+      onLevel?: (level: number) => void;
+      onPartial?: (text: string) => void;
+      onError?: (message: string) => void;
+    },
+    options?: DictationOptions,
+  ): Promise<void>;
   stop(): Promise<string>;
   cancel(): Promise<void>;
 }
@@ -56,15 +65,18 @@ export function createNativeDictation(plugin: DictationPlugin): NativeDictation 
     await Promise.all(current.map((handle) => handle.remove().catch(() => {})));
   };
   return {
-    async start(handlers) {
+    // A server built before the language was sent passes no options: the
+    // phone hears its own language, as it always did.
+    async start(handlers, options) {
       await release();
       handles = await Promise.all([
         plugin.addListener("level", (event) => handlers.onLevel?.(Number(event.level) || 0)),
         plugin.addListener("partial", (event) => handlers.onPartial?.(String(event.text ?? ""))),
         plugin.addListener("error", (event) => handlers.onError?.(String(event.message ?? ""))),
       ]);
+      const language = typeof options?.language === "string" ? options.language.trim() : "";
       try {
-        await plugin.start();
+        await plugin.start(language ? { language } : {});
       } catch (error) {
         await release();
         throw new Error(reason(error, "This phone's speech recognizer could not start."));

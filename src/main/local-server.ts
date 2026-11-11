@@ -5,7 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { lanOrigin } from "../shared/lan";
+import { lanOrigin, readInterfaces } from "../shared/lan";
 import type { LocalStatus, RepairResult, VerifyReport } from "../shared/types";
 import { linkModuleAliases, materializeRunTree } from "./run-tree";
 import { openLog } from "./log-files";
@@ -135,7 +135,7 @@ export class LocalServer {
   // Where friends on this Wi-Fi reach the world: "" unless it runs on
   // every interface and this computer is on a network.
   get lanOrigin(): string {
-    return this.state === "running" && this.bindAll ? lanOrigin(os.networkInterfaces(), this.port) : "";
+    return this.state === "running" && this.bindAll ? lanOrigin(readInterfaces(() => os.networkInterfaces()), this.port) : "";
   }
   get sharedOnLan(): boolean {
     return this.bindAll;

@@ -33,6 +33,19 @@ export function lanAddresses(interfaces: Interfaces): string[] {
   return out.sort((a, b) => rank(a) - rank(b));
 }
 
+// The interfaces as a read finds them, or none when the host refuses the
+// read: Node's os.networkInterfaces() throws where enumeration is not
+// allowed (a restricted sandbox, Android's SELinux). Sharing on the Wi-Fi
+// is a hint, so a refusal reads as "on no network" rather than taking the
+// local world's status down with it, and the next read tries again.
+export function readInterfaces(read: () => Interfaces): Interfaces {
+  try {
+    return read();
+  } catch {
+    return {};
+  }
+}
+
 // The one address the share row shows, "" when this computer is on no
 // network at all.
 export function lanOrigin(interfaces: Interfaces, port: number): string {

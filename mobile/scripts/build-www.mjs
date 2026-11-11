@@ -6,7 +6,7 @@ import { build } from "esbuild";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const mobile = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const repo = path.dirname(mobile);
@@ -16,7 +16,7 @@ const www = path.join(mobile, "www");
 // and Preact itself resolvable from this package's own node_modules when
 // CI installs only these.
 const { buildGameCss, gameBuildOptions, rendererBuildOptions, serverDir } = await import(
-  path.join(repo, "scripts", "build-renderer.mjs")
+  pathToFileURL(path.join(repo, "scripts", "build-renderer.mjs")).href
 );
 const shared = { ...rendererBuildOptions, nodePaths: [path.join(mobile, "node_modules")] };
 
@@ -83,7 +83,7 @@ fs.copyFileSync(path.join(mobile, "src", "index.html"), path.join(www, "index.ht
 // module so it is found in the mobile package's own node_modules (CI installs
 // only those) or in the repo root's.
 const requireHere = createRequire(import.meta.url);
-const { FONT_PACKAGES } = await import(path.join(repo, "scripts", "font-files.mjs"));
+const { FONT_PACKAGES } = await import(pathToFileURL(path.join(repo, "scripts", "font-files.mjs")).href);
 fs.mkdirSync(path.join(www, "fonts"), { recursive: true });
 for (const [name, files] of Object.entries(FONT_PACKAGES)) {
   const folder = path.join(path.dirname(requireHere.resolve(`${name}/package.json`)), "files");

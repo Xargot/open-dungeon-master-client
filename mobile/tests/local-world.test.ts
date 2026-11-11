@@ -127,6 +127,37 @@ test("a chosen password is never kept", async () => {
   assert.equal(h.calls.at(-1), "register:kaleb:hunter2");
 });
 
+test("a password typed on the form drops a minted secret it shows stale", async () => {
+  // The form is only asked for once the minted secret stops signing in
+  // (the password was changed inside the game): kept, it would fail at
+  // every renewal and spend the account's login throttle.
+  const h = harness({
+    profile: { username: "kaleb", secret: "minted-secret", token: "old", tokenExpiresAt: "2000-01-01T00:00:00.000Z" },
+  });
+  const result = await createLocalWorld(h.deps).login({ username: "kaleb", password: "hunter2" });
+  assert.equal(result.ok, true);
+  assert.ok(h.calls.includes("login:kaleb:hunter2"));
+  assert.equal(h.profile()?.secret, "");
+  assert.equal(h.profile()?.token, "tok-relogin");
+});
+
+test("signing in on the form with the minted secret itself keeps it", async () => {
+  const h = harness({
+    profile: { username: "kaleb", secret: "minted-secret", token: "old", tokenExpiresAt: "2000-01-01T00:00:00.000Z" },
+  });
+  await createLocalWorld(h.deps).login({ username: "kaleb", password: "minted-secret" });
+  assert.equal(h.profile()?.secret, "minted-secret");
+});
+
+test("signing in as somebody else from the form does not inherit the old secret", async () => {
+  const h = harness({
+    profile: { username: "kaleb", secret: "minted-secret", token: "old", tokenExpiresAt: "2000-01-01T00:00:00.000Z" },
+  });
+  await createLocalWorld(h.deps).login({ username: "rowan", password: "hunter2" });
+  assert.equal(h.profile()?.username, "rowan");
+  assert.equal(h.profile()?.secret, "");
+});
+
 test("an expired token renews silently from the kept secret", async () => {
   const h = harness({
     world: { firstRun: false },

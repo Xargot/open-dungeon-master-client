@@ -165,11 +165,27 @@
     });
   }
 
+  // One frame is asked for when the next drawing is nearly due, not every
+  // display frame: asking sixty (or 120, or 144) times a second to draw
+  // twenty made the page run a full frame of its own each time, with
+  // nothing to show for two in three of them. The drawing follows the
+  // clock, so it looks the same however the frames fall.
+  const LEAD_MS = 4;
+  let timer = 0;
+
   function tick(nowMs: number): void {
-    raf = window.requestAnimationFrame(tick);
-    if (nowMs - lastDraw < FRAME_MS) return;
+    raf = 0;
     lastDraw = nowMs;
     draw(nowMs);
+    wait();
+  }
+
+  function wait(): void {
+    const due = Math.max(0, FRAME_MS - LEAD_MS - (performance.now() - lastDraw));
+    timer = window.setTimeout(() => {
+      timer = 0;
+      if (running()) raf = window.requestAnimationFrame(tick);
+    }, due);
   }
 
   // The shell pauses the loop under a running world (chrome.ts): a
@@ -183,11 +199,13 @@
 
   function sync(): void {
     if (running()) {
-      if (!raf) raf = window.requestAnimationFrame(tick);
-    } else if (raf) {
-      window.cancelAnimationFrame(raf);
-      raf = 0;
+      if (!raf && !timer) raf = window.requestAnimationFrame(tick);
+      return;
     }
+    if (raf) window.cancelAnimationFrame(raf);
+    if (timer) window.clearTimeout(timer);
+    raf = 0;
+    timer = 0;
   }
 
   function onVisibility(): void {

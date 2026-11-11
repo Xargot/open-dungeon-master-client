@@ -237,6 +237,10 @@ export interface GameOptions {
   // The host's bare home page, when the shell's title screen stands in for
   // it (GameRouter.onHome).
   onHome?(): void;
+  // The session at this world ended on its own (a password changed
+  // elsewhere, an admin's reset, the account deleted, the days run out):
+  // the shell takes the player home, where it signs in again its own way.
+  onSessionLost?(): void;
 }
 
 // A plain anchor in a host page (not a next/link) would take the whole
@@ -260,7 +264,7 @@ function linkTarget(event: MouseEvent, origin: string): string | null {
 
 export function mountGame(root: HTMLElement, options: GameOptions): GameMount {
   const client = new HostClient(options.session);
-  installRuntime(client);
+  installRuntime(client, { onSessionLost: options.onSessionLost });
   const router = new GameRouter(options.path);
   router.onLeave = options.onLeave;
   router.onHome = options.onHome ?? null;

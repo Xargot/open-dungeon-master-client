@@ -9,11 +9,13 @@ import type { SseEvent } from "../../shared/sse.js";
 import { hostRelativePath } from "../../shared/host-fetch.js";
 import { rewriteCssUrls, rootRelativeCssUrls } from "../../shared/css-urls.js";
 import { localAsset } from "./local-assets.js";
+import { answersLocally, assetContentType } from "../../shared/local-assets.js";
 import { forgetObjectUrls, hold, keepObjectUrlsFor, objectUrlFor } from "./object-urls.js";
 import { canStreamAudio, liveAudioUrl } from "./live-audio.js";
 import { isLiveNarrationPath } from "../../shared/live-audio.js";
 import { createDeferredPlay } from "../../shared/deferred-play.js";
 import { watchStreamEvent } from "./offer-watch.js";
+import { createSessionWatch, type SessionWatch } from "../../shared/session-watch.js";
 
 // Public static files of the host: no session needed, so the address is
 // rewritten in place and the browser loads them itself. Any query on the
@@ -38,6 +40,11 @@ let nativeFetch: typeof fetch | null = null;
 let nativeEventSource: typeof EventSource | null = null;
 let observer: MutationObserver | null = null;
 let mediaPatched = false;
+// The session the page holds at its world, watched through the answers it
+// gets (src/shared/session-watch.ts): one that ended on its own takes the
+// player to the app's home rather than to the server's login page.
+let sessionWatch: SessionWatch | null = null;
+let onSessionLost: (() => void) | null = null;
 // Pictures fetched with the player's token (portraits, uploads, generated
 // art) live as object URLs, kept in the ring in object-urls.ts: 256 entries
 // or 96 MB, whichever fills first, the oldest retired as newer ones arrive
@@ -101,13 +108,90 @@ function patchedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Res
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   const path = hostRelativePath(url, document.baseURI);
   if (path === null) return base(input, init);
-  if (path.startsWith("/api/auth/logout")) forgetObjectUrls();
-  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
-  headers.set("authorization", `Bearer ${client.session.token}`);
-  headers.set("x-odm-client", "shell");
-  const target = `${client.origin}${path}`;
-  if (!(input instanceof Request)) return base(target, { ...init, headers, credentials: "omit" });
-  return rebuild(input, target).then((request) => base(request, { ...init, headers, credentials: "omit" }));
+  if (path.startsWith("/api/auth/logout")) {
+    // A logout inside the app would revoke a session the app cannot
+    // renew without a stored password and strand the player. New servers
+    // hide the item in the shell; old ones still offer it, so the call
+    // never leaves and the App home door opens instead.
+    forgetObjectUrls();
+    (window as { odmShell?: { showServers?: () => void } }).odmShell?.showServers?.();
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }
+  const toHost = (): Promise<Response> => {
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+    headers.set("authorization", `Bearer ${client.session.token}`);
+    headers.set("x-odm-client", "shell");
+    const target = `${client.origin}${path}`;
+    const answer = !(input instanceof Request)
+      ? base(target, { ...init, headers, credentials: "omit" })
+      : rebuild(input, target).then((request) => base(request, { ...init, headers, credentials: "omit" }));
+    watchSession(path, answer);
+    return answer;
+  };
+  // A file the app carries is read from the app, not asked of the host
+  // (src/shared/local-assets.ts answersLocally): by fetch where the page may
+  // fetch the files beside it, over the shell's bridge where it may not. A
+  // copy that will not read falls back to the host, as it always went.
+  const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+  if (!answersLocally(method, path)) return toHost();
+  const own = localAsset(path);
+  if (!own) return toHost();
+  const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+  const reading = ownFilesFetchable()
+    ? base(own, { signal: signal ?? undefined }).then((response) => (response.ok ? response : null))
+    : readOverBridge(path);
+  return reading.then(
+    (response) => response ?? toHost(),
+    (error: unknown) => {
+      if (signal?.aborted) throw error;
+      return toHost();
+    },
+  );
+}
+
+// Whether the page may fetch the files beside it. The Android app's page is
+// served (https://localhost) and may; the desktop's is a file, which fetch
+// does not read and the page's own policy (connect-src) does not allow.
+function ownFilesFetchable(): boolean {
+  const protocol = window.location.protocol;
+  return protocol === "https:" || protocol === "http:";
+}
+
+// The desktop's way to a file it carries: the shell reads it (window.odm
+// .readAsset, src/main/local-asset-read.ts) and the page gets the answer a
+// host would have given.
+function readOverBridge(path: string): Promise<Response | null> {
+  const read = window.odm?.readAsset;
+  if (!read) return Promise.resolve(null);
+  return read(path).then((bytes) =>
+    bytes ? new Response(bytes as BodyInit, { status: 200, headers: { "content-type": assetContentType(path) } }) : null,
+  );
+}
+
+// Hands one answer to the session watch. The page reads the body itself,
+// so /api/auth/me is read from a copy, taken before the page's own handlers
+// run (this one was attached first).
+function watchSession(path: string, answer: Promise<Response>): void {
+  const watch = sessionWatch;
+  if (!watch || !path.startsWith("/api/")) return;
+  void answer.then(
+    async (response) => {
+      let signedIn: boolean | undefined;
+      if (response.status === 200 && (path.split(/[?#]/)[0] ?? "") === "/api/auth/me") {
+        const copy = response.clone();
+        const body = (await copy.json().catch(() => null)) as { user?: unknown } | null;
+        if (body && typeof body === "object" && "user" in body) signedIn = !!body.user;
+      }
+      sessionSeen(watch, path, response.status, signedIn);
+    },
+    () => undefined,
+  );
+}
+
+function sessionSeen(watch: SessionWatch, path: string, status: number, signedIn?: boolean): void {
+  // An answer from a world already left says nothing about the one on screen.
+  if (watch !== sessionWatch || !watch.seen(path, status, signedIn)) return;
+  onSessionLost?.();
 }
 
 // The same request at another address. A Request's url is read-only and a
@@ -153,6 +237,7 @@ class HostEventSource extends EventTarget {
       // Not a host stream: hand the real thing back to the caller.
       return new real(this.url) as unknown as HostEventSource;
     }
+    const watch = sessionWatch;
     this.handle = client.stream(
       this.url,
       (event: SseEvent) => {
@@ -164,6 +249,8 @@ class HostEventSource extends EventTarget {
         if (event.event === "message") this.onmessage?.(message);
       },
       (open, stop?: StreamStop) => {
+        // The stream's own fetch goes to the host directly, past patchedFetch.
+        if (stop && watch) sessionSeen(watch, this.url, stop.status);
         this.readyState = stop ? 2 : open ? 1 : 0;
         const event = open ? new Event("open") : new CustomEvent<StreamStop | null>("error", { detail: stop ?? null });
         this.dispatchEvent(event);
@@ -521,8 +608,12 @@ export function installLocalAssets(): void {
   patchMediaSetters();
 }
 
-export function installRuntime(client: HostClient): void {
+// onSessionLost: the page's session at this world ended on its own (the
+// session watch above); called at most once per entry into a world.
+export function installRuntime(client: HostClient, options: { onSessionLost?: () => void } = {}): void {
   active = client;
+  sessionWatch = createSessionWatch();
+  onSessionLost = options.onSessionLost ?? null;
   keepObjectUrlsFor(client);
   guardBogusErrors();
   document.removeEventListener("click", onDownloadClick);
@@ -554,6 +645,8 @@ export function activeHost(): HostClient | null {
 // the object URLs stay for the next entry into the same host.
 export function uninstallRuntime(): void {
   active = null;
+  sessionWatch = null;
+  onSessionLost = null;
   document.removeEventListener("click", onDownloadClick);
   observer?.disconnect();
 }

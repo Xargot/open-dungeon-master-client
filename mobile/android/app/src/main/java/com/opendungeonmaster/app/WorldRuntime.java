@@ -46,7 +46,7 @@ public final class WorldRuntime {
     private static final long HEALTH_TIMEOUT_MS = 90_000;
     private static final long LOG_CAP_BYTES = 1024L * 1024;
     private static final int PORT_ATTEMPTS = 3;
-    private static final String PAYLOAD_ASSET = "server-payload.zip";
+    private static final String PAYLOAD_ASSET = "server-payload.zip.xz";
     private static final String PAYLOAD_INFO_ASSET = "server-payload.json";
     /** The Capacitor www folder inside the APK's assets. */
     private static final String WWW_ASSETS = "public/";
@@ -186,10 +186,12 @@ public final class WorldRuntime {
     private void unpackInto(File target) throws IOException {
         int art = WorldEnvironment.copyLocalAssets(
                 (path) -> app.getAssets().open(WWW_ASSETS + path), target);
+        long started = System.nanoTime();
         try (InputStream in = new BufferedInputStream(app.getAssets().open(PAYLOAD_ASSET))) {
-            WorldEnvironment.unpackZip(in, target);
+            WorldEnvironment.unpackPayload(in, target);
         }
-        Log.i(TAG, "Restored " + art + " art files from the app's own copy");
+        Log.i(TAG, "Restored " + art + " art files from the app's own copy; unpacked the server in "
+                + (System.nanoTime() - started) / 1_000_000 + " ms");
     }
 
     /**

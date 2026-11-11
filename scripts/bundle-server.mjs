@@ -17,6 +17,7 @@ import { gunzipSync } from "node:zlib";
 import { pruneServerPayload } from "./prune-server-payload.mjs";
 import { addEmbeddingBindings } from "./stage-desktop-payload.mjs";
 import { serverDir as findServerDir } from "./server-dir.mjs";
+import { folderBytes, packageBin } from "./package-bin.mjs";
 
 const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const serverDir = findServerDir(repo);
@@ -71,15 +72,24 @@ console.log(`Building server ${serverPkg.version} (${commit}) in ${buildDir}`);
 run("git", ["-C", serverDir, "worktree", "add", "--detach", buildDir, "HEAD"]);
 
 try {
-  run("cp", [
-    "-a",
-    "--reflink=auto",
-    path.join(serverDir, "node_modules"),
-    path.join(buildDir, "node_modules"),
-  ]);
+  // A reflink copy where cp has one (seconds on btrfs or APFS); Windows
+  // has no cp, and Node's copy keeps the links as they are.
+  if (process.platform === "win32") {
+    fs.cpSync(path.join(serverDir, "node_modules"), path.join(buildDir, "node_modules"), {
+      recursive: true,
+      verbatimSymlinks: true,
+    });
+  } else {
+    run("cp", [
+      "-a",
+      "--reflink=auto",
+      path.join(serverDir, "node_modules"),
+      path.join(buildDir, "node_modules"),
+    ]);
+  }
   // The postinstall step copies dice assets into public/, which git ignores.
   run(process.execPath, ["scripts/copy-dice-assets.mjs"], { cwd: buildDir });
-  run(path.join(buildDir, "node_modules", ".bin", "next"), ["build"], {
+  run(process.execPath, [packageBin(path.join(buildDir, "node_modules"), "next"), "build"], {
     cwd: buildDir,
     env: { ...process.env, DOCKER_BUILD: "1" },
   });
@@ -152,10 +162,18 @@ run(process.execPath, ["scripts/alias-server-modules.mjs"], { cwd: repo });
 
 console.log(`Rebuilding native modules for Electron ${electronPkg.version}`);
 run(
-  path.join(repo, "node_modules", ".bin", "electron-rebuild"),
-  ["--version", electronPkg.version, "--module-dir", vendorDir, "--force", "--only", "better-sqlite3-multiple-ciphers"],
+  process.execPath,
+  [
+    packageBin(path.join(repo, "node_modules"), "@electron/rebuild", "electron-rebuild"),
+    "--version",
+    electronPkg.version,
+    "--module-dir",
+    vendorDir,
+    "--force",
+    "--only",
+    "better-sqlite3-multiple-ciphers",
+  ],
   { cwd: repo },
 );
 
-const size = execFileSync("du", ["-sh", vendorDir], { encoding: "utf8" }).split("\t")[0];
-console.log(`Payload staged at vendor/server (${size})`);
+console.log(`Payload staged at vendor/server (${(folderBytes(vendorDir) / 1024 / 1024).toFixed(0)} MB)`);

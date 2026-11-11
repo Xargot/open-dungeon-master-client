@@ -12,6 +12,8 @@
 //   odmShell.shareLink      the OS share sheet for a link (the webview has
 //       no navigator.share); the invite dialog and the server address card
 //       use it to offer Share next to Copy and the QR code.
+import { hookedFetch } from "./shell-hook-core";
+
 (() => {
   interface ShareStatus {
     supported: boolean;
@@ -113,4 +115,14 @@
       },
     },
   };
+
+  // The page's fetch: an old server's Log out is refused, and a session
+  // that died on its own closes the page onto the server list
+  // (shell-hook-core.ts).
+  window.fetch = hookedFetch({
+    fetch: window.fetch.bind(window),
+    pageHref: () => window.location.href,
+    onLogout: () => host.odmShell?.showServers(),
+    onSessionLost: () => post({ odmShell: "session-lost" }),
+  });
 })();

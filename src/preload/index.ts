@@ -42,6 +42,7 @@ const bridge: OdmBridge = {
   offerNotice: (notice, cardInView) => ipcRenderer.invoke("offer:notify", notice, cardInView),
   clearOfferNotice: (offerId: string) => ipcRenderer.invoke("offer:clear", offerId),
   openDocument: (path: string) => ipcRenderer.invoke("doc:open", path),
+  readAsset: (hostPath: string) => ipcRenderer.invoke("asset:read", hostPath),
   credentialStorage: () => ipcRenderer.invoke("prefs:credentials"),
   setKeepSignIns: (keep: boolean) => ipcRenderer.invoke("prefs:set-keep-sign-ins", keep),
   portalMode: () => ipcRenderer.invoke("prefs:portal"),
@@ -65,7 +66,7 @@ const bridge: OdmBridge = {
   shareStop: () => ipcRenderer.invoke("share:stop"),
   lanStart: () => ipcRenderer.invoke("share:lan-start"),
   lanStop: () => ipcRenderer.invoke("share:lan-stop"),
-  localAiScan: () => ipcRenderer.invoke("local-ai:scan"),
+  localAiScan: (gpuId?: string) => ipcRenderer.invoke("local-ai:scan", typeof gpuId === "string" ? gpuId : undefined),
   localAiInstall: (tierId: string) => ipcRenderer.invoke("local-ai:install", tierId),
   localAiInstallComfy: () => ipcRenderer.invoke("local-ai:install-comfy"),
   localAiUninstall: (component: "text" | "images") =>

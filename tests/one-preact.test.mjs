@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -14,7 +14,7 @@ const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PROBE = `
 import path from "node:path";
 import { build } from "esbuild";
-import { gameBuildOptions, serverDir } from ${JSON.stringify(path.join(repo, "scripts", "build-renderer.mjs"))};
+import { gameBuildOptions, serverDir } from ${JSON.stringify(pathToFileURL(path.join(repo, "scripts", "build-renderer.mjs")).href)};
 const game = gameBuildOptions(serverDir());
 const result = await build({ ...game, nodePaths: [...game.nodePaths, ${JSON.stringify(path.join(repo, "mobile", "node_modules"))}], outdir: "out", write: false, metafile: true, logLevel: "silent" });
 const roots = new Set(Object.keys(result.metafile.inputs).filter((file) => /node_modules\\/preact\\//.test(file)).map((file) => path.resolve(file.split("node_modules/preact/")[0])));

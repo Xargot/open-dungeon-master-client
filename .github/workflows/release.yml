@@ -621,6 +621,27 @@ jobs:
           if [ "$bundles" = 0 ]; then
             echo "::warning::${GITHUB_REF_NAME} has no flatpak bundle; flatpak installs are not offered this version until one is uploaded."
           fi
+      # SHA256SUMS: one "<sha256>  <file>" line per release file, from the
+      # digests GitHub computed when each was uploaded (no download needed).
+      # The desktop updater reads it when GitHub's API rate-limits the
+      # player's connection (src/main/updater.ts releaseChecksum), so an
+      # update still installs, and it lets anyone check a download with
+      # `sha256sum -c SHA256SUMS --ignore-missing`. Written last, once every
+      # job has uploaded; a file without a digest fails the release.
+      - name: Publish SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" --json assets -q '.assets[] | select(.name != "SHA256SUMS")' > assets.jsonl
+          missing=$(jq -r 'select((.digest // "") | startswith("sha256:") | not) | .name' assets.jsonl)
+          if [ -n "$missing" ]; then
+            echo "::error::GitHub lists no sha256 digest for: $missing"
+            exit 1
+          fi
+          jq -r '"\(.digest | ltrimstr("sha256:"))  \(.name)"' assets.jsonl | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS --clobber
       # Live as a beta once the repository variable PUBLISH_AS_BETA is true
       # (gh variable set PUBLISH_AS_BETA --body true); until then as the
       # latest release, the way every release went out before the channels.

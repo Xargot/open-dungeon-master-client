@@ -15,6 +15,8 @@ import { el } from "./dom.js";
 import { renderHelp } from "./help.js";
 import { renderHome } from "./home.js";
 import { renderSettings } from "./settings.js";
+import { showShellToast } from "./toast.js";
+import { SESSION_LOST_NOTICE } from "../shared/session-watch.js";
 import { connectAt, localPlayAt, refresh, refreshFeed, state, tunnelWatchers } from "./state.js";
 
 interface GameMount {
@@ -39,6 +41,7 @@ interface GameModule {
       path: string;
       onLeave(url: string): void;
       onHome?(): void;
+      onSessionLost?(): void;
     },
   ): GameMount;
 }
@@ -269,6 +272,16 @@ export async function tryOpenNative(
     onLeave: (url) => {
       unmountGame();
       leaveFor(hostId, url);
+    },
+    // Without this the page would send the player to the server's own
+    // login form, which signs in for the page alone: the app's stored
+    // session stays dead and nothing the form does is kept. Home, the
+    // world's tile signs in again the app's way (renewing silently where
+    // the app keeps the password).
+    onSessionLost: () => {
+      unmountGame();
+      showShellToast(SESSION_LOST_NOTICE);
+      goHome();
     },
     // The device world's home is the app's home: its own title screen
     // would only repeat this one's menu, save slots and join boxes.

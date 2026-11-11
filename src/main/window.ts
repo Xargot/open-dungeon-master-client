@@ -6,6 +6,7 @@ import { appIconPath } from "./app-icon";
 import { autoConfirmBluetoothPairing, wireBluetoothChooser } from "./bluetooth";
 import { editMenu } from "./edit-menu";
 import { PORTAL_TOKEN_COOKIE } from "../shared/portal-logic";
+import { SESSION_LOST_NOTICE } from "../shared/session-watch";
 import { isShellCookieWrite } from "./session-cookies";
 import { nativeDiceOverlay } from "./native-dice-overlay";
 
@@ -75,6 +76,7 @@ export class ShellWindow {
   // own pages or the device world itself.
   private portalHost = "";
   private unwatchCookies: (() => void) | null = null;
+  private unguardSession: (() => void) | null = null;
   private onRevoked: ((origin: string) => void) | null = null;
   // Set while a browser-based sign-in (Discord OAuth) occupies the view.
   private loginCancel: ((reason: Error) => void) | null = null;
@@ -326,6 +328,7 @@ export class ShellWindow {
     // the pages it navigates: dark, like the shell page under it.
     view.setBackgroundColor(SHELL_BACKGROUND);
     this.watchForLogout(partition, origin);
+    this.guardSession(view, origin);
     // The game UI pairs Pixels dice over Web Bluetooth; the shell provides
     // the device chooser Electron does not ship.
     wireBluetoothChooser(view.webContents, () => this.win);
@@ -493,9 +496,67 @@ export class ShellWindow {
     this.unwatchCookies = () => cookies.off("changed", listener);
   }
 
+  // An old server's web UI still offers "Log out" inside the app. Letting
+  // it through would revoke a session the app cannot always renew (no
+  // stored password, Discord-only accounts) and strand the player on a
+  // login page, so the request is cancelled before it reaches the server
+  // and the app's own home screen opens. New servers hide the item in the
+  // shell and never send it.
+  private guardSession(view: WebContentsView, origin: string): void {
+    const filter = { urls: [`${origin}/api/auth/logout*`] };
+    const handler = (
+      details: Electron.OnBeforeRequestListenerDetails,
+      callback: (response: Electron.CallbackResponse) => void,
+    ): void => {
+      if (details.method === "POST" && this.view === view && this.currentOrigin === origin) {
+        callback({ cancel: true });
+        this.showManager();
+        return;
+      }
+      callback({});
+    };
+    // The session may also die on its own (a password changed elsewhere,
+    // an admin's reset, the account deleted, the days run out), and the
+    // page then sends the player to the server's login form, whose sign-in
+    // the app never keeps. A 401 on any of the page's API calls but the
+    // sign-in routes (whose 401 is a wrong password) says exactly that
+    // (src/shared/session-watch.ts reads the native screens the same way):
+    // the stored token is forgotten and home says why.
+    const answers = { urls: [`${origin}/api/*`] };
+    const onAnswer = (details: Electron.OnCompletedListenerDetails): void => {
+      if (details.statusCode !== 401 || this.view !== view || this.currentOrigin !== origin) return;
+      let pathname = "";
+      try {
+        pathname = new URL(details.url).pathname;
+      } catch {
+        return;
+      }
+      if (pathname.startsWith("/api/auth/")) return;
+      this.onRevoked?.(this.portalHost || origin);
+      this.showManager(SESSION_LOST_NOTICE);
+    };
+    const requests = view.webContents.session.webRequest;
+    try {
+      requests.onBeforeRequest(filter, handler);
+      requests.onCompleted(answers, onAnswer);
+    } catch {
+      // A session that cannot watch still hides the item on new servers.
+    }
+    this.unguardSession = () => {
+      try {
+        requests.onBeforeRequest(filter, null);
+        requests.onCompleted(answers, null);
+      } catch {
+        // The session is gone with the view.
+      }
+    };
+  }
+
   private detachView(): void {
     this.unwatchCookies?.();
     this.unwatchCookies = null;
+    this.unguardSession?.();
+    this.unguardSession = null;
     if (!this.win || !this.view) return;
     this.win.contentView.removeChildView(this.view);
     this.view.webContents.close();
@@ -504,14 +565,16 @@ export class ShellWindow {
     this.portalHost = "";
   }
 
-  showManager(): void {
+  // notice: why the world was left, told on the home screen as a toast.
+  showManager(notice = ""): void {
+    const event: ShellEvent = notice ? { kind: "show-manager", notice } : { kind: "show-manager" };
     if (this.loginCancel) {
       this.cancelLogin(new Error("Sign-in cancelled."));
-      this.sendEvent({ kind: "show-manager" });
+      this.sendEvent(event);
       return;
     }
     if (!this.view) return;
     this.detachView();
-    this.sendEvent({ kind: "show-manager" });
+    this.sendEvent(event);
   }
 }

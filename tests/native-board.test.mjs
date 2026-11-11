@@ -67,6 +67,16 @@ test('native view only launches its local registration; private pipes omit paren
     const reopened=await reopening;
     assert.ok(reopened?.id);
     await manager.close(7,reopened.id);
+    // The page navigates away (dispose) while an open waits on the last
+    // child's close: the open is refused, not left to start a child no page
+    // owns, drawn over the window.
+    const third=await manager.open(7,{addonId:'sample',viewId:'map'});
+    const closingThird=manager.close(7,third.id);
+    const stale=manager.open(7,{addonId:'sample',viewId:'map'});
+    await manager.dispose();
+    await closingThird;
+    await assert.rejects(stale,/stopped during startup/,'an open waiting on a close is refused once its page has gone');
+    assert.equal(manager.active,null,'and no child was started for it');
     fs.writeFileSync(config,JSON.stringify({addonId:'sample',viewId:'map',root,entry:'../outside.mjs'}));
     assert.throws(()=>readNativeRegistration(config),/native registration/i);
   } finally {

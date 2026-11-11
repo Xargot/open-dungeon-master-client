@@ -18,10 +18,14 @@ export interface IdleWorldInput {
   // host may have handed out an address from there, so their world stays
   // up for those guests.
   ownWorldLeft: boolean;
+  // An adventure PDF import is being read by the world (the server's job
+  // runs for minutes to hours on a local model). Stopping the world would
+  // stop it; it waits instead and is looked at again later.
+  importing?: boolean;
 }
 
 export function shouldStopIdleWorld(input: IdleWorldInput): boolean {
-  return !input.shared && !input.nativeWorldOpen && !input.webViewOpen && !input.ownWorldLeft;
+  return !input.shared && !input.nativeWorldOpen && !input.webViewOpen && !input.ownWorldLeft && !input.importing;
 }
 
 export interface IdleStopperDeps {
@@ -54,7 +58,11 @@ export function createIdleStopper(deps: IdleStopperDeps): {
     timer = setTimer(() => {
       timer = null;
       void (async () => {
-        if (shouldStopIdleWorld(await deps.inspect())) await deps.stop();
+        const facts = await deps.inspect();
+        if (shouldStopIdleWorld(facts)) await deps.stop();
+        // Only an import keeps an otherwise idle world up, and it ends on
+        // its own: look again once another grace period has passed.
+        else if (facts.importing && !facts.shared && !facts.nativeWorldOpen && !facts.webViewOpen && !facts.ownWorldLeft) arm();
       })().catch(() => undefined);
     }, deps.graceMs);
   }

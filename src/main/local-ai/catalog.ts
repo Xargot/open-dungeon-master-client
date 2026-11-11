@@ -17,36 +17,8 @@ const QWEN_BASE = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/m
 const GEMMA_BASE = "https://huggingface.co/unsloth/gemma-4-12b-it-qat-GGUF/resolve/main";
 const GPT_OSS_BASE = "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main";
 
-// Pinned llama.cpp build. Vulkan on Linux/Windows covers AMD, NVIDIA and
-// Intel with one binary; macOS arm64 uses Metal. Pinned rather than latest
-// because the generated server preset depends on this build's flags.
-export const LLAMA_TAG = "b10621";
-const LLAMA_BASE = `https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_TAG}`;
-
-// The SHA-256 GitHub lists for each pinned archive. Raising LLAMA_TAG means
-// updating these from the new release's assets.
-const LLAMA_SHA256: Record<string, string> = {
-  [`llama-${LLAMA_TAG}-bin-ubuntu-vulkan-x64.tar.gz`]: "3db8e4411033ef4531072be43377e859bcdbf9640c7bb36f9656e538eabd0978",
-  [`llama-${LLAMA_TAG}-bin-win-vulkan-x64.zip`]: "2672d85bf87c8280d94dee01eb6a86280046878f70a07d786a93637fa9081163",
-  [`llama-${LLAMA_TAG}-bin-macos-arm64.tar.gz`]: "429c8270608600188035e5e92f7d78dffb7900904fe7dd7e6a84f48068cd13cf",
-};
-
-export function llamaArchiveSha256(url: string): string | null {
-  return LLAMA_SHA256[url.slice(url.lastIndexOf("/") + 1)] ?? null;
-}
-
-export function llamaArchiveUrl(platform: string, arch: string): string | null {
-  if (platform === "linux" && arch === "x64") {
-    return `${LLAMA_BASE}/llama-${LLAMA_TAG}-bin-ubuntu-vulkan-x64.tar.gz`;
-  }
-  if (platform === "win32" && arch === "x64") {
-    return `${LLAMA_BASE}/llama-${LLAMA_TAG}-bin-win-vulkan-x64.zip`;
-  }
-  if (platform === "darwin" && arch === "arm64") {
-    return `${LLAMA_BASE}/llama-${LLAMA_TAG}-bin-macos-arm64.tar.gz`;
-  }
-  return null;
-}
+// The llama.cpp build itself (which one, from where, on which device) is
+// engine.ts.
 
 export interface CatalogEntry {
   id: string;
@@ -249,10 +221,13 @@ export function catalogEntry(tierId: string): CatalogEntry | null {
 // prompt suppresses tool calls), and a per-request value overrides the
 // preset, so the 1.5 below never reaches ODM's own calls. Repetition is
 // stopped on the server, by its stream guard, not here.
+// device is the --device value of the card the player's local AI runs on
+// ("CUDA0", "Vulkan1"); "" leaves the choice to llama.cpp.
 export function presetFor(
   entry: CatalogEntry,
   modelPath: string,
   hardware: HardwareInfo,
+  device = "",
 ): string {
   // Experts to RAM when the file cannot live in VRAM. Never on unified
   // memory, where the distinction does not exist.
@@ -270,6 +245,9 @@ export function presetFor(
     "jinja = true",
     "load-on-startup = true",
   ];
+  if (device) {
+    lines.push(`device = ${device}`);
+  }
   if (offload) {
     lines.push("cpu-moe = true");
   }
@@ -309,12 +287,13 @@ export function presetFor(
 // on demand rather than at startup: summaries are occasional, and boot
 // should spend its memory bandwidth on the story model. Sampling follows
 // Qwen's published instruct defaults for the 4B line.
-export function utilityPresetSection(modelPath: string): string {
+export function utilityPresetSection(modelPath: string, device = ""): string {
   const lines = [
     "",
     `[${UTILITY_ENTRY.alias}]`,
     `model = ${modelPath}`,
     "ngl = 99",
+    ...(device ? [`device = ${device}`] : []),
     "fa = on",
     "jinja = true",
     "load-on-startup = false",

@@ -270,6 +270,17 @@ function main(): void {
         relaunch,
         flatpak,
         launchedBySteam,
+        // userData/updater.log: why a check or an install failed, which
+        // otherwise went nowhere. Rotated like the other logs.
+        log: (line) => {
+          const file = path.join(app.getPath("userData"), "updater.log");
+          try {
+            if (fs.statSync(file).size > 1024 * 1024) fs.renameSync(file, `${file}.1`);
+          } catch {
+            // No log yet.
+          }
+          fs.appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
+        },
       },
       // Settings > This app > Beta updates, read at every check.
       () => store.updateChannel(),

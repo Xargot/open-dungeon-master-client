@@ -13,6 +13,7 @@ mobile/www/
 # Android world-hosting build artifacts: the server payload zip and the
 # Node runtime are staged by mobile/scripts/bundle-android-payload.mjs.
 mobile/android/app/src/main/assets/server-payload.zip
+mobile/android/app/src/main/assets/server-payload.zip.xz
 mobile/android/app/src/main/assets/server-payload.json
 mobile/android/app/src/main/jniLibs/
 mobile/runtime/

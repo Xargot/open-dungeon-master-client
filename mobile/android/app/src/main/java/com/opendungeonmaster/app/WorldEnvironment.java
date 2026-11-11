@@ -3,6 +3,7 @@ package com.opendungeonmaster.app;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.util.Log;
+import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -25,6 +26,7 @@ import java.util.regex.Pattern;
 import java.util.zip.ZipInputStream;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.tukaani.xz.XZInputStream;
 
 /**
  * The stateless pieces of running the phone-hosted server: reading payload
@@ -54,6 +56,17 @@ final class WorldEnvironment {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * Unpacks the bundled payload: a stored zip compressed whole with xz
+     * (mobile/scripts/bundle-android-payload.mjs packPayload), which is a
+     * quarter the size of the same tree deflated file by file. The xz
+     * stream hands ZipInputStream the zip as it decodes, so nothing larger
+     * than one file is ever held.
+     */
+    static void unpackPayload(InputStream xz, File target) throws IOException {
+        unpackZip(new BufferedInputStream(new XZInputStream(xz), 65536), target);
     }
 
     /**

@@ -15,12 +15,14 @@ type Listener = (event: Record<string, unknown>) => void;
 function fakePlugin(options: { available?: boolean; startFails?: string; text?: string } = {}) {
   const listeners = new Map<string, Set<Listener>>();
   const calls: string[] = [];
+  const started: Array<{ language?: string }> = [];
   const plugin = {
     async available() {
       return { available: options.available ?? true, onDevice: true };
     },
-    async start() {
+    async start(asked: { language?: string }) {
       calls.push("start");
+      started.push(asked);
       if (options.startFails) {
         throw new Error(options.startFails);
       }
@@ -45,7 +47,7 @@ function fakePlugin(options: { available?: boolean; startFails?: string; text?: 
     }
   };
   const live = () => [...listeners.values()].reduce((sum, set) => sum + set.size, 0);
-  return { plugin: plugin as unknown as DictationPlugin, emit, live, calls };
+  return { plugin: plugin as unknown as DictationPlugin, emit, live, calls, started };
 }
 
 test("a take streams level and words, then stop hands back the trimmed text", async () => {
@@ -116,4 +118,17 @@ test("the page is offered a recognizer only when the phone has one", async () =>
   assert.equal(await installNativeDictation(fakePlugin({ available: false }).plugin, without), false);
   assert.equal(without.odmDictation, undefined);
   assert.deepEqual(without.events, []);
+});
+
+test("a take is heard in the table's language the page names, and in the phone's own when it names none", async () => {
+  const fake = fakePlugin();
+  const dictation = createNativeDictation(fake.plugin);
+  await dictation.start({}, { language: "it" });
+  await dictation.stop();
+  // A server built before the language was sent calls start(handlers) alone.
+  await dictation.start({});
+  await dictation.stop();
+  await dictation.start({}, { language: "  " });
+  await dictation.stop();
+  assert.deepEqual(fake.started, [{ language: "it" }, {}, {}]);
 });

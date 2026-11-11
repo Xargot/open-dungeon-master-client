@@ -62,6 +62,7 @@ function rerenderLive(): void {
 
 window.odm.onEvent((event) => {
   if (event.kind === "show-manager") {
+    if (event.notice) showShellToast(event.notice);
     goHome();
     void refreshFeed();
   } else if (event.kind === "back") {

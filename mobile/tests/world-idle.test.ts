@@ -111,3 +111,20 @@ test("a failing look or stop is swallowed", async () => {
   assert.doesNotThrow(() => timers.fire());
   await settle();
 });
+
+test("an adventure import keeps an idle world up, and the world is looked at again until it ends", async () => {
+  const timers = fakeTimers();
+  let stops = 0;
+  let facts: IdleWorldInput = { ...IDLE, importing: true };
+  const stopper = createIdleStopper({ graceMs: 30_000, inspect: () => facts, stop: async () => void (stops += 1), setTimer: timers.setTimer, clearTimer: timers.clearTimer });
+  assert.equal(shouldStopIdleWorld(facts), false, "an import is running");
+  stopper.arm();
+  timers.fire();
+  await settle();
+  assert.equal(stops, 0, "the world stopped mid-import");
+  assert.equal(timers.pending.size, 1, "nobody looks again once the import ends");
+  facts = { ...IDLE, importing: false };
+  timers.fire();
+  await settle();
+  assert.equal(stops, 1, "the world stayed up after the import ended");
+});

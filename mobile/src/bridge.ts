@@ -64,6 +64,8 @@ import {
 } from "../../src/shared/portal-logic";
 import { landingPath, safeInnerPath } from "../../src/shared/open-path";
 import { diagnosticSummary, reportFileInput, type AppFacts } from "../../src/shared/diagnostics";
+import { SESSION_LOST_NOTICE } from "../../src/shared/session-watch";
+import { keptSecret } from "../../src/shared/kept-secret";
 import type {
   AccountDeletionResult,
   ConnectResult,
@@ -870,6 +872,21 @@ async function savePublishedCodes(codes: readonly string[]): Promise<void> {
   await Preferences.set({ key: PUBLISHED_CODES_KEY, value: JSON.stringify(codes) });
 }
 
+// Whether the phone's own world is reading an adventure PDF import (server
+// 0.34.0's /api/pdf-imports; an older world answers 404, which is "no").
+async function worldImporting(): Promise<boolean> {
+  try {
+    const profile = await loadLocalProfile();
+    const status = await localWorld.status();
+    if (!profile?.token || !status.origin || status.state !== "running") return false;
+    const reply = await fetchJson(`${status.origin}/api/pdf-imports`, { headers: { authorization: `Bearer ${profile.token}` }, timeoutMs: 5_000 });
+    const imports = (reply.data as { imports?: Array<{ state?: string }> } | null)?.imports ?? [];
+    return reply.status === 200 && imports.some((entry) => entry.state === "working" || entry.state === "ready");
+  } catch {
+    return false;
+  }
+}
+
 async function publishRoomCodes(url: string): Promise<void> {
   const profile = await loadLocalProfile();
   const status = await localWorld.status();
@@ -1072,6 +1089,7 @@ const idleWorld = createIdleStopper({
       nativeWorldOpen: window.odmMountedHostId === LOCAL_HOST_ID,
       webViewOpen: gameWebViewOpen,
       ownWorldLeft: closedOwnWorld,
+      importing: await worldImporting(),
     };
   },
   async stop() {
@@ -1381,6 +1399,8 @@ async function rememberGrant(
   origin: string,
   grant: TokenGrant,
   secret?: string,
+  // The password the player typed for this sign-in, when there was one.
+  typedPassword?: string,
 ): Promise<{ ok: true; server: ServerSummary; stored: StoredServer }> {
   let name = "";
   let instanceId = "";
@@ -1398,9 +1418,6 @@ async function rememberGrant(
   const existing =
     servers.find((entry) => entry.origin === origin) ??
     (instanceId ? servers.find((entry) => entry.instanceId === instanceId) : undefined);
-  // A stored password belongs to one account: signing in to the same host
-  // as somebody else must not keep the old one.
-  const sameAccount = !existing || existing.username === grant.username;
   const server: StoredServer = {
     id: existing?.id ?? crypto.randomUUID(),
     origin,
@@ -1409,7 +1426,9 @@ async function rememberGrant(
     lastUsedAt: new Date().toISOString(),
     token: grant.token,
     tokenExpiresAt: grant.expiresAt,
-    secret: secret ?? (sameAccount ? existing?.secret : undefined),
+    // A made-up password the app keeps stays with its own account, and
+    // only while a typed one does not show it stale (src/shared/kept-secret.ts).
+    secret: secret ?? keptSecret(existing, grant.username, typedPassword),
     instanceId: instanceId || existing?.instanceId,
     joinCodes: existing?.joinCodes,
   };
@@ -1424,8 +1443,9 @@ async function adoptGrant(
   grant: TokenGrant,
   joinCode: string,
   secret?: string,
+  typedPassword?: string,
 ): Promise<Result<{ server: ServerSummary }>> {
-  const remembered = await rememberGrant(origin, grant, secret);
+  const remembered = await rememberGrant(origin, grant, secret, typedPassword);
   if (joinCode) await rememberJoinCode(remembered.stored.id, joinCode);
   await openServer(remembered.stored, joinCode);
   return { ok: true, server: remembered.server };
@@ -1565,8 +1585,9 @@ const bridge: OdmBridge = {
     try {
       const origin = normalizeOrigin(String(input?.origin ?? ""));
       if (!origin) return fail(new Error("Bad server address."));
-      const grant = await loginForToken(origin, String(input.username), String(input.password));
-      return await adoptGrant(origin, grant, cleanCode(input.joinCode));
+      const password = String(input.password);
+      const grant = await loginForToken(origin, String(input.username), password);
+      return await adoptGrant(origin, grant, cleanCode(input.joinCode), undefined, password);
     } catch (err) {
       return fail(err);
     }
@@ -1960,12 +1981,20 @@ async function routeWebviewMessage(event: unknown): Promise<void> {
   const detail =
     wrapped && typeof wrapped === "object" && wrapped.detail !== undefined ? wrapped.detail : event;
   if (isShellRequest(detail)) {
-    // "Switch server" from the page's account menu (shell-hook.js). The
-    // plugin fires closeEvent for toolbar and back-button closes only, so
-    // the manager is shown explicitly here.
+    // "Switch server" from the page's account menu, or the page noticing
+    // its session died on its own (shell-hook.js). The plugin fires
+    // closeEvent for toolbar and back-button closes only, so the manager
+    // is shown explicitly here; the session news travels as a toast.
+    const lost = (detail as { odmShell?: unknown }).odmShell === "session-lost";
+    // A Discord sign-in runs the server's signed-out pages in this web view
+    // on purpose, and their refusals are no news; its own watcher settles it.
+    if (lost && pendingDiscord) return;
     await InAppBrowser.close().catch(() => undefined);
     gameWebViewClosed();
-    emit({ kind: "show-manager" });
+    emit({
+      kind: "show-manager",
+      notice: lost ? SESSION_LOST_NOTICE : "",
+    });
     return;
   }
   const share = shareRequestOf(detail);
@@ -1989,7 +2018,8 @@ function isShellRequest(detail: unknown): boolean {
   return (
     !!detail &&
     typeof detail === "object" &&
-    (detail as { odmShell?: unknown }).odmShell === "servers"
+    ((detail as { odmShell?: unknown }).odmShell === "servers" ||
+      (detail as { odmShell?: unknown }).odmShell === "session-lost")
   );
 }
 

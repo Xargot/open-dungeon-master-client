@@ -1,27 +1,37 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
-import type { HardwareInfo, LocalAiStatus, LocalAiTier } from "../../shared/types";
+import type { GpuInfo, HardwareInfo, LocalAiStatus, LocalAiTier } from "../../shared/types";
 import {
   catalogEntry,
-  llamaArchiveSha256,
-  llamaArchiveUrl,
   presetFor,
   sizeTiers,
   utilityFits,
   utilityPresetSection,
-  LLAMA_TAG,
   UTILITY_ENTRY,
   type CatalogEntry,
 } from "./catalog";
 import { ComfyManager } from "./comfy";
 import { downloadVerified, ensureDiskSpace, fetchHfSha256 } from "./download";
+import {
+  describeEngine,
+  engineCurrent,
+  engineEnv,
+  enginePlan,
+  engineSupported,
+  findServer,
+  installEngine,
+  listDevices,
+  pickDevice,
+  planDownloadMb,
+  readEngine,
+  sameBackend,
+  vulkanPlan,
+  LLAMA_TAG,
+  type EnginePlan,
+} from "./engine";
 import { scanHardware } from "./hardware";
 import { openLog } from "../log-files";
-
-const runFile = promisify(execFile);
 
 // Installs and runs the local AI: a pinned llama.cpp build plus one curated
 // model, laid out under userData/local-ai. The server preset is regenerated
@@ -68,6 +78,8 @@ export class LocalAiManager {
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly restartDelays: number[];
   private hardware: HardwareInfo | null = null;
+  // Where the last start put the model, for the status line.
+  private engineWhere = "";
   private readonly listeners = new Set<() => void>();
   readonly comfy: ComfyManager;
 
@@ -93,6 +105,32 @@ export class LocalAiManager {
   }
   private get logFile(): string {
     return path.join(this.rootDir, "llama-server.log");
+  }
+  // The graphics card the player picked on the storyteller screen.
+  private get gpuFile(): string {
+    return path.join(this.rootDir, "gpu.json");
+  }
+
+  private gpuChoice(): string {
+    try {
+      const id = (JSON.parse(fs.readFileSync(this.gpuFile, "utf8")) as { gpuId?: unknown }).gpuId;
+      return typeof id === "string" ? id : "";
+    } catch {
+      return "";
+    }
+  }
+
+  private async currentHardware(): Promise<HardwareInfo> {
+    this.hardware ??= await scanHardware(this.gpuChoice());
+    return this.hardware;
+  }
+
+  private static selectedGpu(hardware: HardwareInfo): GpuInfo | null {
+    return hardware.gpus?.find((gpu) => gpu.id === hardware.gpuId) ?? null;
+  }
+
+  private plan(hardware: HardwareInfo): EnginePlan | null {
+    return enginePlan(process.platform, process.arch, LocalAiManager.selectedGpu(hardware));
   }
 
   onStatus(listener: () => void): void {
@@ -130,13 +168,14 @@ export class LocalAiManager {
   status(): LocalAiStatus {
     const state = this.state();
     return {
-      supported: llamaArchiveUrl(process.platform, process.arch) !== null,
+      supported: engineSupported(process.platform, process.arch),
       installedTierId: state?.tierId ?? "",
       installedLabel: state ? (catalogEntry(state.tierId)?.label ?? "") : "",
       utilityInstalled: Boolean(state?.utilityFile),
       running: this.externalServer || (this.ready && this.child !== null && this.child.exitCode === null),
       external: this.externalServer,
       endpoint: LOCAL_AI_ENDPOINT,
+      engine: state ? describeEngine(readEngine(this.binDir, state.llamaTag, process.platform), this.engineWhere) : "",
       busy: this.busy,
       progress: this.progress,
       error: this.error,
@@ -144,8 +183,14 @@ export class LocalAiManager {
     };
   }
 
-  async scan(): Promise<{ hardware: HardwareInfo; tiers: LocalAiTier[] }> {
-    this.hardware = await scanHardware();
+  // gpuId is the player's pick of graphics card, kept for every later scan,
+  // install and start; undefined keeps the last pick.
+  async scan(gpuId?: string): Promise<{ hardware: HardwareInfo; tiers: LocalAiTier[] }> {
+    if (gpuId !== undefined) {
+      fs.mkdirSync(this.rootDir, { recursive: true });
+      fs.writeFileSync(this.gpuFile, JSON.stringify({ gpuId }));
+    }
+    this.hardware = await scanHardware(this.gpuChoice());
     return {
       hardware: this.hardware,
       tiers: sizeTiers(this.hardware, this.state()?.tierId ?? ""),
@@ -153,23 +198,7 @@ export class LocalAiManager {
   }
 
   private llamaServerPath(): string | null {
-    const name = process.platform === "win32" ? "llama-server.exe" : "llama-server";
-    const stack = [this.binDir];
-    while (stack.length) {
-      const dir = stack.pop() as string;
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const entry of entries) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) stack.push(full);
-        else if (entry.name === name) return full;
-      }
-    }
-    return null;
+    return findServer(this.binDir, process.platform);
   }
 
   // The catalog GGUFs live on Hugging Face, whose tree API publishes each
@@ -185,27 +214,28 @@ export class LocalAiManager {
     });
   }
 
-  private async ensureLlama(): Promise<void> {
-    if (this.llamaServerPath()) return;
-    const url = llamaArchiveUrl(process.platform, process.arch);
-    if (!url) throw new Error("Local AI is not supported on this platform yet.");
-    const archive = path.join(this.rootDir, path.basename(url));
-    const label = "Downloading the AI engine (llama.cpp)";
-    this.setProgress(label, 0);
-    await downloadVerified(url, archive, {
-      kind: "archive",
-      sha256: llamaArchiveSha256(url),
-      onProgress: (percent) => this.setProgress(label, percent),
+  // The llama.cpp build for the card the local AI runs on (engine.ts),
+  // replaced when this version pins another build or the card changed kind.
+  private async ensureLlama(hardware: HardwareInfo): Promise<void> {
+    const plan = this.plan(hardware);
+    if (!plan) throw new Error("Local AI is not supported on this platform yet.");
+    if (this.llamaServerPath() && engineCurrent(readEngine(this.binDir, this.state()?.llamaTag ?? "", process.platform), plan)) return;
+    await installEngine({
+      platform: process.platform,
+      rootDir: this.rootDir,
+      binDir: this.binDir,
+      plan,
+      fallback: vulkanPlan(process.platform, process.arch),
+      onProgress: (label, percent) => this.setProgress(label, percent),
     });
-    fs.rmSync(this.binDir, { recursive: true, force: true });
-    fs.mkdirSync(this.binDir, { recursive: true });
-    // bsdtar (shipped on Windows 10+ and macOS) and GNU tar both unpack
-    // .tar.gz; bsdtar also reads the Windows .zip asset.
-    await runFile("tar", ["-xf", archive, "-C", this.binDir]);
-    fs.rmSync(archive, { force: true });
-    if (!this.llamaServerPath()) {
-      throw new Error("The llama.cpp archive did not contain llama-server.");
-    }
+  }
+
+  // GB of free disk an engine install wants: the archives plus what they
+  // unpack to (the CUDA runtime roughly doubles).
+  private engineDiskGb(hardware: HardwareInfo): number {
+    const plan = this.plan(hardware);
+    if (!plan || (this.llamaServerPath() && engineCurrent(readEngine(this.binDir, this.state()?.llamaTag ?? "", process.platform), plan))) return 0.5;
+    return Math.max(1, (planDownloadMb(plan) * 3) / 1024);
   }
 
   async install(tierId: string): Promise<void> {
@@ -217,18 +247,16 @@ export class LocalAiManager {
     this.emit();
     try {
       await this.stopServer();
-      const hardware = this.hardware ?? (await scanHardware());
-      this.hardware = hardware;
+      const hardware = await this.currentHardware();
       const wantUtility = utilityFits(entry, hardware);
       const modelPath = path.join(this.modelsDir, entry.file);
       const utilityPath = path.join(this.modelsDir, UTILITY_ENTRY.file);
       // Check free space before the first byte, not 38 GB into the stream.
-      // One spare GB covers the llama archive and its unpacked binaries.
-      let neededGb = 1;
+      let neededGb = this.engineDiskGb(hardware);
       if (!fs.existsSync(modelPath)) neededGb += entry.sizeGb;
       if (wantUtility && !fs.existsSync(utilityPath)) neededGb += UTILITY_ENTRY.sizeGb;
       await ensureDiskSpace(this.rootDir, neededGb);
-      await this.ensureLlama();
+      await this.ensureLlama(hardware);
       if (!fs.existsSync(modelPath)) {
         await this.downloadModel(entry, modelPath);
       }
@@ -320,6 +348,7 @@ export class LocalAiManager {
       return;
     }
     const entry = catalogEntry(state.tierId);
+    if (entry && this.llamaServerPath()) await this.replaceWrongEngine(state.llamaTag);
     const bin = this.llamaServerPath();
     if (!entry || !bin) {
       // Installed by the state file's word, but not runnable: say so where
@@ -334,13 +363,13 @@ export class LocalAiManager {
     this.busy = "starting";
     this.emit();
     try {
-      const hardware = this.hardware ?? (await scanHardware());
-      this.hardware = hardware;
+      const hardware = await this.currentHardware();
+      const device = await this.deviceFor(hardware, bin, state.llamaTag);
       fs.writeFileSync(
         this.presetFile,
-        presetFor(entry, path.join(this.modelsDir, entry.file), hardware) +
+        presetFor(entry, path.join(this.modelsDir, entry.file), hardware, device) +
           (state.utilityFile
-            ? utilityPresetSection(path.join(this.modelsDir, state.utilityFile))
+            ? utilityPresetSection(path.join(this.modelsDir, state.utilityFile), device)
             : ""),
       );
       const log = openLog(this.logFile);
@@ -359,11 +388,7 @@ export class LocalAiManager {
         ],
         {
           stdio: ["ignore", log, log],
-          // The Vulkan build's shared libraries sit beside the binary.
-          env: {
-            ...process.env,
-            LD_LIBRARY_PATH: `${path.dirname(bin)}:${process.env.LD_LIBRARY_PATH ?? ""}`,
-          },
+          env: engineEnv(bin),
         },
       );
       this.child = child;
@@ -423,6 +448,44 @@ export class LocalAiManager {
       this.busy = "";
       this.emit();
     }
+  }
+
+  // An engine built for another kind of card (an NVIDIA card left on the
+  // Vulkan-only build earlier versions installed, or a card swapped since)
+  // is replaced before it starts. A failed download keeps the old engine:
+  // it still runs, only not as well.
+  private async replaceWrongEngine(legacyTag: string): Promise<void> {
+    const hardware = await this.currentHardware();
+    const plan = this.plan(hardware);
+    const installed = readEngine(this.binDir, legacyTag, process.platform);
+    if (!plan || !installed || sameBackend(installed, plan)) return;
+    this.busy = "downloading";
+    this.emit();
+    try {
+      await ensureDiskSpace(this.rootDir, this.engineDiskGb(hardware));
+      await this.ensureLlama(hardware);
+    } catch {
+      // The installed engine carries on.
+    } finally {
+      this.busy = "";
+      this.progress = null;
+      this.emit();
+    }
+  }
+
+  // The --device value that is the player's card, from what this engine
+  // lists; "" leaves the choice to llama.cpp. Pinning it is what keeps an
+  // integrated GPU from taking the model off the real card.
+  private async deviceFor(hardware: HardwareInfo, bin: string, legacyTag: string): Promise<string> {
+    const gpu = LocalAiManager.selectedGpu(hardware);
+    const engine = readEngine(this.binDir, legacyTag, process.platform);
+    this.engineWhere = gpu?.name ?? "";
+    if (!gpu || !engine) return "";
+    const devices = await listDevices(bin);
+    const device = pickDevice(devices, gpu, engine.backend);
+    const listed = devices.find((entry) => entry.name === device);
+    this.engineWhere = listed ? `${listed.description} (${listed.name})` : `${gpu.name}, device chosen by llama.cpp`;
+    return device;
   }
 
   // A server that was answering and went away is brought back, a few times
@@ -515,8 +578,7 @@ export class LocalAiManager {
     this.error = "";
     this.emit();
     try {
-      const hardware = this.hardware ?? (await scanHardware());
-      this.hardware = hardware;
+      const hardware = await this.currentHardware();
       await this.comfy.install(hardware, (label, percent) => this.setProgress(label, percent));
     } catch (err) {
       this.error = err instanceof Error ? err.message : String(err);
@@ -542,11 +604,11 @@ export class LocalAiManager {
   // stack alone; the two live under one root yet uninstall independently.
   async uninstallText(): Promise<void> {
     await this.stopServer();
-    const targets = [this.binDir, this.modelsDir, this.stateFile, this.presetFile, this.logFile];
+    const targets = [this.binDir, `${this.binDir}.new`, this.modelsDir, this.stateFile, this.presetFile, this.logFile];
     // A quit mid-download can leave the llama archive or its .part behind.
     try {
       for (const file of fs.readdirSync(this.rootDir)) {
-        if (file.startsWith("llama-")) targets.push(path.join(this.rootDir, file));
+        if (file.startsWith("llama-") || file.startsWith("cudart-")) targets.push(path.join(this.rootDir, file));
       }
     } catch {
       // Never installed.
