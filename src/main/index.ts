@@ -63,9 +63,8 @@ function makeCrypt(): TokenCrypt {
 }
 
 function main(): void {
-  // A stable directory name across dev and packaged runs, so accounts and
-  // the offline world never depend on how the app was launched.
-  app.setPath("userData", path.join(app.getPath("appData"), "open-dungeon-master-client"));
+  // This local working copy keeps the existing dev profile separate from the installed app.
+  app.setPath("userData", path.join(app.getPath("appData"), app.isPackaged ? "open-dungeon-master-client" : "open-dungeon-master-client-dev"));
   // Cut, Copy and Paste on a right-click, in every page the app shows.
   wireContextMenus(app);
 
@@ -81,13 +80,8 @@ function main(): void {
     }
   };
 
-  // Register the odm:// handler. A dev run ("electron .") must tell the OS
-  // how to relaunch us with the app path.
-  if (process.defaultApp) {
-    if (process.argv[1]) {
-      app.setAsDefaultProtocolClient("odm", process.execPath, [path.resolve(process.argv[1])]);
-    }
-  } else {
+  // Development runs must not replace the installed app's protocol handler.
+  if (app.isPackaged) {
     app.setAsDefaultProtocolClient("odm");
   }
 
