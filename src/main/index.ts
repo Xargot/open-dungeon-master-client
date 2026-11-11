@@ -64,7 +64,7 @@ function makeCrypt(): TokenCrypt {
 
 function main(): void {
   // This local working copy keeps the existing dev profile separate from the installed app.
-  app.setPath("userData", path.join(app.getPath("appData"), app.isPackaged ? "open-dungeon-master-client" : "open-dungeon-master-client-dev"));
+  app.setPath("userData", process.env.ODM_TEST_USER_DATA || path.join(app.getPath("appData"), app.isPackaged ? "open-dungeon-master-client" : "open-dungeon-master-client-dev"));
   // Cut, Copy and Paste on a right-click, in every page the app shows.
   wireContextMenus(app);
 
