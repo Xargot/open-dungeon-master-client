@@ -65,6 +65,7 @@ import {
   patchAdminSettings,
   postAdmin,
   probeServer,
+  recoverOwner,
   registerAccount,
   sessionState,
   speechEngine,
@@ -963,6 +964,7 @@ export function registerIpc(ctx: ShellContext): ShellIpc {
     login: (username, password) => loginForToken(local.origin, username, password),
     register: (username, password) =>
       registerAccount(local.origin, { username, password, inviteCode: "", setupCode: local.setupCode }),
+    recover: (username, password) => recoverOwner(local.origin, { username, password, setupCode: local.setupCode }),
     awaitsOwner: async () => {
       const probe = await probeServer(local.origin).catch(() => null);
       return probe ? probe.needsSetup : null;

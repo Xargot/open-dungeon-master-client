@@ -7,7 +7,16 @@ import type { WorldRequest } from "../shared/world-transfer";
 
 const TIMEOUT_MS = 10_000;
 
-export class ApiError extends Error {}
+// `status` is the HTTP status when the server answered, absent when it
+// could not be reached: a refusal and a lost answer are told apart by it.
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+  }
+}
 
 async function api(origin: string, pathname: string, init?: RequestInit, timeoutMs = TIMEOUT_MS): Promise<Response> {
   try {
@@ -22,7 +31,7 @@ async function api(origin: string, pathname: string, init?: RequestInit, timeout
 
 async function errorFrom(res: Response, fallback: string): Promise<ApiError> {
   const body = (await res.json().catch(() => null)) as { error?: string } | null;
-  return new ApiError(body?.error || fallback);
+  return new ApiError(body?.error || fallback, res.status);
 }
 
 export async function probeServer(origin: string): Promise<ServerProbe> {
@@ -75,6 +84,34 @@ export async function loginForToken(
     body: JSON.stringify({ username, password }),
   });
   if (!res.ok) throw await errorFrom(res, "Sign-in failed.");
+  const body = (await res.json()) as {
+    token: string;
+    expiresAt: string;
+    user: { username: string; isAdmin: boolean };
+  };
+  return {
+    token: body.token,
+    expiresAt: body.expiresAt,
+    username: body.user.username,
+    isAdmin: Boolean(body.user.isAdmin),
+  };
+}
+
+// The way back into the world this app hosts once the password the shell
+// made up for its owner stops signing in: the setup code the shell handed
+// the world at start proves the caller is the app, and the world sets the
+// new password the shell made up (src/app/api/auth/recover-owner on the
+// server). Worlds older than the route answer 404, which throws here.
+export async function recoverOwner(
+  origin: string,
+  input: { username: string; password: string; setupCode: string },
+): Promise<TokenGrant> {
+  const res = await api(origin, "/api/auth/recover-owner", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw await errorFrom(res, "Could not get back into your world.");
   const body = (await res.json()) as {
     token: string;
     expiresAt: string;

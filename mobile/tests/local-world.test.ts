@@ -17,6 +17,8 @@ function harness(overrides: {
   registerFails?: boolean;
   // What the world says of its owner (needsSetup); absent, it cannot say.
   awaitsOwner?: boolean;
+  // Whether the world offers /api/auth/recover-owner (absent: no such dep).
+  recover?: "works" | "refused";
   adminSettings?: unknown;
   // What the world's admin listings answer, by path and role (a model
   // listing's `recommended`, or the setup's story listing).
@@ -63,6 +65,16 @@ function harness(overrides: {
       if (overrides.loginFails) throw new Error("Wrong username or password.");
       return { token: "tok-relogin", expiresAt: "2030-01-01T00:00:00.000Z", username };
     },
+    ...(overrides.recover === undefined
+      ? {}
+      : {
+          recoverOwner: async (_origin: string, input: { username: string; password: string; setupCode: string }) => {
+            calls.push(`recover:${input.username}:${input.password}:${input.setupCode}`);
+            // An older world answers 404: the route never ran.
+            if (overrides.recover === "refused") throw Object.assign(new Error("Not found."), { status: 404 });
+            return { token: "tok-recovered", expiresAt: "2030-01-01T00:00:00.000Z", username: input.username };
+          },
+        }),
     registerAccount: async (_origin, input) => {
       calls.push(`register:${input.username}:${input.password}`);
       if (overrides.registerFails) throw new Error("The world did not answer.");
@@ -558,4 +570,57 @@ test("a phone with no Wi-Fi address says so, and an older native side cannot sha
   });
   const older = harness();
   assert.equal((await createLocalWorld(older.deps).setLanSharing(true)).ok, false);
+});
+
+test("an owner whose made-up password stopped signing in is let back in with the setup code (issue 909)", async () => {
+  const h = harness({
+    world: { firstRun: false, setupCode: "phone-setup-code" },
+    profile: { username: "kaleb", secret: "stale", token: "", tokenExpiresAt: "" },
+    loginFails: true,
+    awaitsOwner: false,
+    recover: "works",
+  });
+  assert.deepEqual(await createLocalWorld(h.deps).play(""), { ok: true });
+  assert.ok(h.calls.includes("recover:kaleb:minted-secret:phone-setup-code"));
+  assert.deepEqual(h.profile(), {
+    username: "kaleb",
+    secret: "minted-secret",
+    token: "tok-recovered",
+    tokenExpiresAt: "2030-01-01T00:00:00.000Z",
+  });
+  assert.equal(h.opened.at(-1), "http://127.0.0.1:3210|tok-recovered|");
+});
+
+test("a world that refuses recovery, or a native side with no setup code, still asks for a sign-in", async () => {
+  const refused = harness({
+    world: { firstRun: false, setupCode: "phone-setup-code" },
+    profile: { username: "kaleb", secret: "stale", token: "", tokenExpiresAt: "" },
+    loginFails: true,
+    awaitsOwner: false,
+    recover: "refused",
+  });
+  assert.deepEqual(await createLocalWorld(refused.deps).play(""), { ok: false, needsLogin: true, error: "Sign in to your world." });
+  // The world refused, so the password the app kept is kept: the sign-in
+  // may have failed for a reason of its own (a lockout, a busy world).
+  assert.equal(refused.profile()?.secret, "stale");
+  const noCode = harness({
+    world: { firstRun: false },
+    profile: { username: "kaleb", secret: "stale", token: "", tokenExpiresAt: "" },
+    loginFails: true,
+    awaitsOwner: false,
+    recover: "works",
+  });
+  assert.deepEqual(await createLocalWorld(noCode.deps).play(""), { ok: false, needsLogin: true, error: "Sign in to your world." });
+  assert.equal(noCode.calls.some((call) => call.startsWith("recover")), false);
+});
+
+test("a password the player chose is never replaced on the phone either", async () => {
+  const h = harness({
+    world: { firstRun: false, setupCode: "phone-setup-code" },
+    profile: { username: "kaleb", secret: "", token: "old", tokenExpiresAt: "2000-01-01T00:00:00.000Z" },
+    awaitsOwner: false,
+    recover: "works",
+  });
+  assert.deepEqual(await createLocalWorld(h.deps).play(""), { ok: false, needsLogin: true, error: "Sign in to your world." });
+  assert.equal(h.calls.some((call) => call.startsWith("recover")), false);
 });
