@@ -10,7 +10,7 @@ if(Test-Path -LiteralPath (Join-Path $installedArtwork 'ui\assets.json')){$artwo
 $env:ODM_ARTWORK_ROOT=$artwork
 $env:ELECTRON_RUN_AS_NODE=$null
 if($Editor){
-  Start-Process -FilePath $runtime -ArgumentList ('"'+(Join-Path $kitRoot 'tabletop\editor')+'"') -WorkingDirectory $kitRoot -WindowStyle Hidden
+  Start-Process -FilePath $runtime -ArgumentList ('"'+(Join-Path $kitRoot 'tabletop\editor')+'"') -WorkingDirectory $kitRoot
   exit
 }
 $settings=Join-Path $kitRoot 'settings'
@@ -25,4 +25,5 @@ $registration | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $config -Enco
 $env:ODM_NATIVE_BOARD_DEV_CONFIG=$config
 $env:ODM_ADDON_DEV_DIRS=$addon
 $env:ODM_SERVER_DIR=$null
-Start-Process -FilePath $runtime -ArgumentList ('"'+(Join-Path $kitRoot 'client')+'"') -WorkingDirectory $kitRoot -WindowStyle Hidden
+Start-Process -FilePath $runtime -ArgumentList ('"'+(Join-Path $kitRoot 'client')+'"') -WorkingDirectory $kitRoot
+
